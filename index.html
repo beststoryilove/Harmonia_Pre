@@ -4880,92 +4880,30 @@
 
     // 歌词点击跳转
     amLyrics.addEventListener('click', e => {
-      // 如果是移动端全屏模式，检查目标是否是歌词项目
-      if (isMobile() && isMobileLyricsFullscreen) {
-        const target = e.target.closest('.item');
-        if (!target) return;
-        
-        // 防止事件冒泡到可能导致滚动的元素
-        e.stopPropagation();
+      // 移动端完全禁用点击歌词跳转
+      if (isMobile()) {
         e.preventDefault();
-        
-        const t = parseFloat(target.dataset.time);
-        if (isNaN(t) || t < 0) return;
-
-        try {
-          audioPlayer.currentTime = t;
-          if (audioPlayer.paused) {
-            audioPlayer.play().then(() => {
-              playButton.innerHTML = '<i class="fas fa-pause"></i>';
-              isPlaying = true;
-              updatePageTitle();
-            }).catch(() => {});
-          }
-        } catch (err) {
-          console.error("Error setting currentTime:", err);
-        }
-      } else {
-        // 原有逻辑
-        const target = e.target.closest('.item');
-        if (!target) return;
-        const t = parseFloat(target.dataset.time);
-        if (isNaN(t) || t < 0) return;
-
-        try {
-          audioPlayer.currentTime = t;
-          if (audioPlayer.paused) {
-            audioPlayer.play().then(() => {
-              playButton.innerHTML = '<i class="fas fa-pause"></i>';
-              isPlaying = true;
-              updatePageTitle();
-            }).catch(() => {});
-          }
-        } catch (err) {
-          console.error("Error setting currentTime:", err);
-        }
+        e.stopPropagation();
+        return;
       }
-    });
 
-    // 添加触摸事件支持，防止在移动端歌词上滑动时意外触发点击
-    amLyrics.addEventListener('touchstart', e => {
-      if (isMobile() && isMobileLyricsFullscreen) {
-        // 记录触摸起始位置
-        const touch = e.touches[0];
-        e.currentTouchStartX = touch.clientX;
-        e.currentTouchStartY = touch.clientY;
-      }
-    });
+      // 桌面端保留原有点击跳转逻辑
+      const target = e.target.closest('.item');
+      if (!target) return;
+      const t = parseFloat(target.dataset.time);
+      if (isNaN(t) || t < 0) return;
 
-    amLyrics.addEventListener('touchmove', e => {
-      if (isMobile() && isMobileLyricsFullscreen) {
-        // 如果是明显的滑动，阻止默认行为
-        const touch = e.touches[0];
-        const startX = e.currentTouchStartX || 0;
-        const startY = e.currentTouchStartY || 0;
-        
-        const deltaX = Math.abs(touch.clientX - startX);
-        const deltaY = Math.abs(touch.clientY - startY);
-        
-        // 如果是明显的滑动（大于10px），阻止事件
-        if (deltaX > 10 || deltaY > 10) {
-          e.preventDefault();
+      try {
+        audioPlayer.currentTime = t;
+        if (audioPlayer.paused) {
+          audioPlayer.play().then(() => {
+            playButton.innerHTML = '<i class="fas fa-pause"></i>';
+            isPlaying = true;
+            updatePageTitle();
+          }).catch(() => {});
         }
-      }
-    });
-
-    amLyrics.addEventListener('touchend', e => {
-      if (isMobile() && isMobileLyricsFullscreen) {
-        const touch = e.changedTouches[0];
-        const startX = e.currentTouchStartX || 0;
-        const startY = e.currentTouchStartY || 0;
-        
-        const deltaX = Math.abs(touch.clientX - startX);
-        const deltaY = Math.abs(touch.clientY - startY);
-        
-        // 如果是明显的滑动，不触发点击事件
-        if (deltaX > 10 || deltaY > 10) {
-          e.preventDefault();
-        }
+      } catch (err) {
+        console.error("Error setting currentTime:", err);
       }
     });
 
