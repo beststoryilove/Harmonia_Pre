@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -66,6 +67,18 @@
       --border-radius-xl: 20px;
       --border-radius-full: 50%;
       --sidebar-width: 320px;
+
+      /* Apple Music 背景色变量 */
+      --color1: rgba(232, 232, 232, 0.9);
+      --color2: rgba(197, 197, 199, 0.9);
+      --color3: rgba(255, 255, 255, 0.9);
+      --color4: rgba(150, 150, 150, 0.9);
+      --color5: rgba(210, 210, 210, 0.9);
+      --color1-rgba: rgba(232, 232, 232, 0);
+      --color2-rgba: rgba(197, 197, 199, 0);
+      --color3-rgba: rgba(255, 255, 255, 0);
+      --color4-rgba: rgba(150, 150, 150, 0);
+      --color5-rgba: rgba(210, 210, 210, 0);
 
       /* iOS Glass Style Variables */
       --ios-glass-dark: rgba(20, 20, 20, 0.55);
@@ -1783,7 +1796,6 @@
     body.mobile-lyrics-fullscreen .lyrics {
       height: 100%;
       overflow-y: hidden !important;
-      touch-action: pan-y !important;
       -webkit-overflow-scrolling: auto !important;
       touch-action: pan-x pan-y !important;
       pointer-events: auto !important;
@@ -2872,6 +2884,12 @@
         if (lyricsVisible) {
           rightcontent.classList.remove('hidden');
           lyricsToggleBtn.innerHTML = '<i class="fas fa-align-left"></i>';
+
+          // 歌词容器从隐藏变为显示，重新计算偏移并刷新布局
+          LYRICS_OFFSET = calculateLyricsOffset();
+          if (amLyricsData.length > 0 && lastLyric >= 0) {
+            UpdateLyricsLayout(lastLyric, amLyricsData, 0);
+          }
         } else {
           rightcontent.classList.add('hidden');
           lyricsToggleBtn.innerHTML = '<i class="fas fa-times"></i>';
@@ -2884,24 +2902,24 @@
       lyricsVisible = isMobileLyricsFullscreen;
       
       if (isMobileLyricsFullscreen) {
-        // 进入全屏歌词模式
         document.body.classList.add('mobile-lyrics-fullscreen');
         rightcontent.classList.remove('hidden');
         lyricsToggleBtn.innerHTML = '<i class="fas fa-times"></i>';
         lyricsToggleBtn.style.background = 'rgba(255, 45, 85, 0.8)';
         lyricsToggleBtn.style.color = 'white';
-        
-        // 确保灵动岛不被隐藏
-        if (dynamicIsland) {
-          dynamicIsland.style.zIndex = '1001';
-        }
+        if (dynamicIsland) dynamicIsland.style.zIndex = '1001';
       } else {
-        // 退出全屏歌词模式
         document.body.classList.remove('mobile-lyrics-fullscreen');
         rightcontent.classList.add('hidden');
         lyricsToggleBtn.innerHTML = '<i class="fas fa-align-left"></i>';
         lyricsToggleBtn.style.background = '';
         lyricsToggleBtn.style.color = '';
+      }
+
+      // 无论进入/退出全屏，重新计算偏移并刷新歌词布局
+      LYRICS_OFFSET = calculateLyricsOffset();
+      if (amLyricsData.length > 0 && lastLyric >= 0) {
+        UpdateLyricsLayout(lastLyric, amLyricsData, 0);
       }
     }
 
@@ -3980,37 +3998,33 @@
       });
     }
 
-    // 逐字歌词更新（带缓存+移动端节流）
-    let lastWordUpdateTime = 0;
-    let cachedWordSpans = [];
-
     function updateWordFillInActiveLine(currentTime) {
       if (!amLyricsData?.length || lastLyric < 0) return;
-      
-      // 移动端：限制更新频率，保持流畅但降低功耗（每 80ms 更新一次）
-      if (isMobile()) {
-        const now = Date.now();
-        if (now - lastWordUpdateTime < 80) return;
-        lastWordUpdateTime = now;
-      }
 
       const line = amLyricsData[lastLyric];
       if (!line?.ele) return;
 
-      // 缓存当前行的 span，避免重复 querySelector
-      if (!cachedWordSpans.length || cachedWordSpans[0]?.parentElement !== line.ele) {
-        cachedWordSpans = Array.from(line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]'));
-      }
+      const spans = line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]');
+      if (!spans.length) return;
 
-      for (const sp of cachedWordSpans) {
+      spans.forEach(sp => {
         const ws = parseFloat(sp.dataset.wstart);
         const we = parseFloat(sp.dataset.wend);
+
         let p = 0;
-        if (currentTime <= ws) p = 0;
-        else if (currentTime >= we) p = 100;
-        else p = ((currentTime - ws) / (we - ws)) * 100;
+        if (currentTime <= ws) {
+          p = 0;
+        } else if (currentTime >= we) {
+          p = 100;
+        } else {
+          const dur = Math.max(we - ws, 0.001);
+          p = ((currentTime - ws) / dur) * 100;
+          if (p < 0) p = 0;
+          if (p > 100) p = 100;
+        }
+
         sp.style.setProperty('--p', `${p}%`);
-      }
+      });
     }
 
     // 检测是否为外语歌词
@@ -4795,64 +4809,38 @@
       return res + LYRICS_OFFSET;
     }
 
-    // 存储所有歌词动画定时器
-    let lyricsAnimationTimeouts = [];
-    function clearLyricsTimeouts() {
-      lyricsAnimationTimeouts.forEach(id => clearTimeout(id));
-      lyricsAnimationTimeouts = [];
-    }
-
     function UpdateLyricsLayout(index, data, init = 1) {
-      // 关键修复：清除之前未执行的定时器，防止堆积
-      clearLyricsTimeouts();
-
-      // 移动端优化：仅更新当前行前后20行，其余行不处理（节省90%计算）
-      let startIdx = 0, endIdx = data.length - 1;
-      if (isMobile()) {
-        startIdx = Math.max(0, index - 20);
-        endIdx = Math.min(data.length - 1, index + 20);
-      }
-
+      // 统一使用白色歌词，适应动态背景
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
-
-      for (let i = startIdx; i <= endIdx; i++) {
+      
+      for (let i = 0; i < data.length; i++) {
         if (!data[i] || !data[i].ele) continue;
-
-        // 高亮颜色
+        
         if (i === index && init) {
           data[i].ele.style.color = activeColor;
         } else {
           data[i].ele.style.color = inactiveColor;
         }
-
-        // 模糊效果（移动端适当降低）
+        
+        // 移动端全屏模式下减少模糊以提高性能
         const blurAmount = (isMobile() && isMobileLyricsFullscreen) ? 
           Math.min(Math.abs(i - index) * 0.3, 2) : 
           (isMobile() ? Math.min(Math.abs(i - index) * 0.5, 3) : Math.abs(i - index));
+        
         data[i].ele.style.filter = `blur(${blurAmount}px)`;
-
+        
         const position = GetLyricsLayout(index, i, data);
-
-        // 移动端核心优化：距离超过10行的直接设置位置，不带动画延迟
-        if (isMobile() && Math.abs(i - index) > 10) {
-          data[i].ele.style.transform = `translateY(${position}px)`;
-          continue;
-        }
-
-        // 原有延迟动画逻辑（保留完全相同的延迟算法）
+        
         let n = (i - index) + 1;
         if (n > 10) n = 0;
-        const delay = init ? (n * 70 - n * 10) : 0;
         
-        const timeoutId = setTimeout(() => {
+        const delay = init ? (n * 70 - n * 10) : 0;
+        setTimeout(() => {
           if (data[i] && data[i].ele) {
             data[i].ele.style.transform = `translateY(${position}px)`;
           }
         }, delay);
-        
-        // 存储定时器ID，以便下次布局前清除
-        lyricsAnimationTimeouts.push(timeoutId);
       }
     }
 
@@ -4867,13 +4855,16 @@
         }
       }
 
-      // ✅ 核心优化：只有高亮行发生变化时才重新布局
       if (activeIndex !== -1 && lastLyric !== activeIndex) {
-        // 保留原有布局动画，仅在此刻触发
+        if (lastLyric >= 0 && lastLyric < amLyricsData.length && amLyricsData[lastLyric].ele) {
+          const prevSpans = amLyricsData[lastLyric].ele.querySelectorAll('span.word-lyric');
+          prevSpans.forEach(span => {
+            span.style.setProperty('--p', '0%');
+          });
+        }
         UpdateLyricsLayout(activeIndex, amLyricsData, 1);
         lastLyric = activeIndex;
         
-        // 标题更新（原有逻辑）
         const lyricText = amLyricsData[activeIndex].text;
         if (lyricText && lyricText.trim() !== '') {
           document.title = lyricText;
@@ -5135,35 +5126,25 @@
       }
     });
 
-    function throttle(func, limit) {
-      let inThrottle;
-      return function(...args) {
-        if (!inThrottle) {
-          func.apply(this, args);
-          inThrottle = true;
-          setTimeout(() => inThrottle = false, limit);
-        }
-      };
-    }
-
-    audioPlayer.addEventListener('timeupdate', throttle(function() {
+    // 音频事件
+    audioPlayer.addEventListener('timeupdate', () => {
       const { currentTime, duration } = audioPlayer;
       if (duration && !isNaN(duration)) {
         const p = (currentTime / duration) * 100;
         progress.style.width = `${p}%`;
         currentTimeDisplay.textContent = formatTime(currentTime);
         durationDisplay.textContent = formatTime(duration);
+        
+        // 更新 Apple Music 风格歌词
+        updateAMLyricsHighlight(currentTime);
+      
+        // 逐字歌词按词高亮（若当前行含逐字 span）
+        updateWordFillInActiveLine(currentTime);
+        
+        // 发送时间到桌面歌词
+        sendCurrentTimeToDesktop(currentTime);
       }
-      
-      // 歌词高亮（原有函数，保留完整动画）
-      updateAMLyricsHighlight(currentTime);
-      
-      // 逐字歌词填充（下一节会优化内部）
-      updateWordFillInActiveLine(currentTime);
-      
-      // 桌面歌词时间同步
-      sendCurrentTimeToDesktop(currentTime);
-    }, isMobile() ? 60 : 30)); // 移动端 60ms 节流，桌面端 30ms
+    });
 
     audioPlayer.addEventListener('ended', async () => {
       isPlaying = false;
@@ -5581,22 +5562,16 @@
 
     // 计算歌词偏移量
     function calculateLyricsOffset() {
-      // 如果是移动端全屏歌词模式，使用固定偏移
-      if (isMobile() && isMobileLyricsFullscreen) {
-        return window.innerHeight * 0.15;
-      }
-      
       const lyricsContainer = document.querySelector('.lyricscontainer');
-      if (lyricsContainer) {
-        const containerHeight = lyricsContainer.offsetHeight;
-        return containerHeight / 3;
+      let containerHeight = lyricsContainer ? lyricsContainer.offsetHeight : 0;
+
+      // 容器不可见（高度为0）时，使用窗口高度作为后备
+      if (containerHeight === 0) {
+        containerHeight = window.innerHeight;
       }
-      
-      // 降级方案
-      if (isMobile()) {
-        return window.innerHeight * 0.15;
-      }
-      return window.innerHeight / 3;
+
+      // 统一使用容器高度的 1/3，保持居中体验
+      return containerHeight / 3;
     }
 
     // ===== 逐字歌词：平滑动画循环（rAF）=====
@@ -5694,20 +5669,9 @@
       updateDynamicIslandWelcome();
       updatePlaylistOrder();
       
-      const bgDiv = document.querySelector('.am-background');
-      if (bgDiv) {
-        bgDiv.style.backgroundImage = 'none';
-        bgDiv.style.backgroundColor = 'var(--bg-dark)'; // 跟随主题色
-      }
-
       // 移动端优化
       if (isMobile()) {
         desktopLyricsBtn.style.display = 'none';
-
-        const lyricsEl = document.querySelector('.lyrics');
-        if (lyricsEl) {
-          lyricsEl.style.willChange = 'transform';
-        }
         
         // 确保初始状态下歌词是隐藏的
         if (!lyricsVisible) {
