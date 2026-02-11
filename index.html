@@ -11,22 +11,18 @@
     @font-face {
       src: url(fonts/PingFangSC-Regular.woff2);
       font-family: "PingFangSC-Regular";
-      font-display: swap;
     }
     @font-face {
       src: url(fonts/sf-pro-display_regular.woff2);
       font-family: "SFPro-Regular";
-      font-display: swap;
     }
     @font-face {
       src: url(fonts/PingFangSC-Semibold.woff2);
       font-family: "PingFangSC-Semibold";
-      font-display: swap;
     }
     @font-face {
       src: url(fonts/sf-pro-display_semibold.woff2);
       font-family: "SFPro-Semibold";
-      font-display: swap;
     }
 
     /* ===== CSS Variables ===== */
@@ -1787,6 +1783,7 @@
     body.mobile-lyrics-fullscreen .lyrics {
       height: 100%;
       overflow-y: hidden !important;
+      touch-action: pan-y !important;
       -webkit-overflow-scrolling: auto !important;
       touch-action: pan-x pan-y !important;
       pointer-events: auto !important;
@@ -3983,33 +3980,37 @@
       });
     }
 
+    // 逐字歌词更新（带缓存+移动端节流）
+    let lastWordUpdateTime = 0;
+    let cachedWordSpans = [];
+
     function updateWordFillInActiveLine(currentTime) {
       if (!amLyricsData?.length || lastLyric < 0) return;
+      
+      // 移动端：限制更新频率，保持流畅但降低功耗（每 80ms 更新一次）
+      if (isMobile()) {
+        const now = Date.now();
+        if (now - lastWordUpdateTime < 80) return;
+        lastWordUpdateTime = now;
+      }
 
       const line = amLyricsData[lastLyric];
       if (!line?.ele) return;
 
-      const spans = line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]');
-      if (!spans.length) return;
+      // 缓存当前行的 span，避免重复 querySelector
+      if (!cachedWordSpans.length || cachedWordSpans[0]?.parentElement !== line.ele) {
+        cachedWordSpans = Array.from(line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]'));
+      }
 
-      spans.forEach(sp => {
+      for (const sp of cachedWordSpans) {
         const ws = parseFloat(sp.dataset.wstart);
         const we = parseFloat(sp.dataset.wend);
-
         let p = 0;
-        if (currentTime <= ws) {
-          p = 0;
-        } else if (currentTime >= we) {
-          p = 100;
-        } else {
-          const dur = Math.max(we - ws, 0.001);
-          p = ((currentTime - ws) / dur) * 100;
-          if (p < 0) p = 0;
-          if (p > 100) p = 100;
-        }
-
+        if (currentTime <= ws) p = 0;
+        else if (currentTime >= we) p = 100;
+        else p = ((currentTime - ws) / (we - ws)) * 100;
         sp.style.setProperty('--p', `${p}%`);
-      });
+      }
     }
 
     // 检测是否为外语歌词
@@ -4795,11 +4796,19 @@
     }
 
     function UpdateLyricsLayout(index, data, init = 1) {
-      // 统一使用白色歌词，适应动态背景
+      // ===== 移动端性能优化：仅更新可视区域附近的行 =====
+      let startIdx = 0, endIdx = data.length - 1;
+      if (isMobile()) {
+        startIdx = Math.max(0, index - 15);
+        endIdx = Math.min(data.length - 1, index + 15);
+      }
+      // ================================================
+
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
-      
-      for (let i = 0; i < data.length; i++) {
+
+      // 仅遍历 startIdx ~ endIdx 范围内的行
+      for (let i = startIdx; i <= endIdx; i++) {
         if (!data[i] || !data[i].ele) continue;
         
         if (i === index && init) {
@@ -4807,19 +4816,15 @@
         } else {
           data[i].ele.style.color = inactiveColor;
         }
-        
-        // 移动端全屏模式下减少模糊以提高性能
+
         const blurAmount = (isMobile() && isMobileLyricsFullscreen) ? 
           Math.min(Math.abs(i - index) * 0.3, 2) : 
           (isMobile() ? Math.min(Math.abs(i - index) * 0.5, 3) : Math.abs(i - index));
-        
         data[i].ele.style.filter = `blur(${blurAmount}px)`;
-        
+
         const position = GetLyricsLayout(index, i, data);
-        
         let n = (i - index) + 1;
         if (n > 10) n = 0;
-        
         const delay = init ? (n * 70 - n * 10) : 0;
         setTimeout(() => {
           if (data[i] && data[i].ele) {
@@ -4840,16 +4845,13 @@
         }
       }
 
+      // ✅ 核心优化：只有高亮行发生变化时才重新布局
       if (activeIndex !== -1 && lastLyric !== activeIndex) {
-        if (lastLyric >= 0 && lastLyric < amLyricsData.length && amLyricsData[lastLyric].ele) {
-          const prevSpans = amLyricsData[lastLyric].ele.querySelectorAll('span.word-lyric');
-          prevSpans.forEach(span => {
-            span.style.setProperty('--p', '0%');
-          });
-        }
+        // 保留原有布局动画，仅在此刻触发
         UpdateLyricsLayout(activeIndex, amLyricsData, 1);
         lastLyric = activeIndex;
         
+        // 标题更新（原有逻辑）
         const lyricText = amLyricsData[activeIndex].text;
         if (lyricText && lyricText.trim() !== '') {
           document.title = lyricText;
@@ -5111,25 +5113,35 @@
       }
     });
 
-    // 音频事件
-    audioPlayer.addEventListener('timeupdate', () => {
+    function throttle(func, limit) {
+      let inThrottle;
+      return function(...args) {
+        if (!inThrottle) {
+          func.apply(this, args);
+          inThrottle = true;
+          setTimeout(() => inThrottle = false, limit);
+        }
+      };
+    }
+
+    audioPlayer.addEventListener('timeupdate', throttle(function() {
       const { currentTime, duration } = audioPlayer;
       if (duration && !isNaN(duration)) {
         const p = (currentTime / duration) * 100;
         progress.style.width = `${p}%`;
         currentTimeDisplay.textContent = formatTime(currentTime);
         durationDisplay.textContent = formatTime(duration);
-        
-        // 更新 Apple Music 风格歌词
-        updateAMLyricsHighlight(currentTime);
-      
-        // 逐字歌词按词高亮（若当前行含逐字 span）
-        updateWordFillInActiveLine(currentTime);
-        
-        // 发送时间到桌面歌词
-        sendCurrentTimeToDesktop(currentTime);
       }
-    });
+      
+      // 歌词高亮（原有函数，保留完整动画）
+      updateAMLyricsHighlight(currentTime);
+      
+      // 逐字歌词填充（下一节会优化内部）
+      updateWordFillInActiveLine(currentTime);
+      
+      // 桌面歌词时间同步
+      sendCurrentTimeToDesktop(currentTime);
+    }, isMobile() ? 60 : 30)); // 移动端 60ms 节流，桌面端 30ms
 
     audioPlayer.addEventListener('ended', async () => {
       isPlaying = false;
@@ -5835,4 +5847,3 @@
   </script>
 </body>
 </html>
-
