@@ -4795,42 +4795,64 @@
       return res + LYRICS_OFFSET;
     }
 
+    // 存储所有歌词动画定时器
+    let lyricsAnimationTimeouts = [];
+    function clearLyricsTimeouts() {
+      lyricsAnimationTimeouts.forEach(id => clearTimeout(id));
+      lyricsAnimationTimeouts = [];
+    }
+
     function UpdateLyricsLayout(index, data, init = 1) {
-      // ===== 移动端性能优化：仅更新可视区域附近的行 =====
+      // 关键修复：清除之前未执行的定时器，防止堆积
+      clearLyricsTimeouts();
+
+      // 移动端优化：仅更新当前行前后20行，其余行不处理（节省90%计算）
       let startIdx = 0, endIdx = data.length - 1;
       if (isMobile()) {
-        startIdx = Math.max(0, index - 15);
-        endIdx = Math.min(data.length - 1, index + 15);
+        startIdx = Math.max(0, index - 20);
+        endIdx = Math.min(data.length - 1, index + 20);
       }
-      // ================================================
 
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
 
-      // 仅遍历 startIdx ~ endIdx 范围内的行
       for (let i = startIdx; i <= endIdx; i++) {
         if (!data[i] || !data[i].ele) continue;
-        
+
+        // 高亮颜色
         if (i === index && init) {
           data[i].ele.style.color = activeColor;
         } else {
           data[i].ele.style.color = inactiveColor;
         }
 
+        // 模糊效果（移动端适当降低）
         const blurAmount = (isMobile() && isMobileLyricsFullscreen) ? 
           Math.min(Math.abs(i - index) * 0.3, 2) : 
           (isMobile() ? Math.min(Math.abs(i - index) * 0.5, 3) : Math.abs(i - index));
         data[i].ele.style.filter = `blur(${blurAmount}px)`;
 
         const position = GetLyricsLayout(index, i, data);
+
+        // 移动端核心优化：距离超过10行的直接设置位置，不带动画延迟
+        if (isMobile() && Math.abs(i - index) > 10) {
+          data[i].ele.style.transform = `translateY(${position}px)`;
+          continue;
+        }
+
+        // 原有延迟动画逻辑（保留完全相同的延迟算法）
         let n = (i - index) + 1;
         if (n > 10) n = 0;
         const delay = init ? (n * 70 - n * 10) : 0;
-        setTimeout(() => {
+        
+        const timeoutId = setTimeout(() => {
           if (data[i] && data[i].ele) {
             data[i].ele.style.transform = `translateY(${position}px)`;
           }
         }, delay);
+        
+        // 存储定时器ID，以便下次布局前清除
+        lyricsAnimationTimeouts.push(timeoutId);
       }
     }
 
@@ -5681,6 +5703,11 @@
       // 移动端优化
       if (isMobile()) {
         desktopLyricsBtn.style.display = 'none';
+
+        const lyricsEl = document.querySelector('.lyrics');
+        if (lyricsEl) {
+          lyricsEl.style.willChange = 'transform';
+        }
         
         // 确保初始状态下歌词是隐藏的
         if (!lyricsVisible) {
