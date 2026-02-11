@@ -1120,7 +1120,7 @@
     }
 
     .lyrics > .item {
-      position: absolute;
+      position: relative;  
       padding: 20px;
       box-sizing: border-box;
       background-color: transparent;
@@ -1135,6 +1135,7 @@
     .lyrics > .item.highlight {
       transform: scale(1.02);
       color: rgba(255,255,255,1) !important;
+      will-change: transform;
     }
 
     .lyrics > .item .lyric-translation {
