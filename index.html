@@ -5534,28 +5534,6 @@
       };
 
       wordLyricRAF = requestAnimationFrame(tick);
-
-      let lastWordLyricUpdate = 0;
-      const WORD_LYRIC_THROTTLE_MS = isMobile() ? 30 : 0; // 移动端100ms，桌面端0（无限制）
-
-      function tick() {
-        if (!audioPlayer.paused && !audioPlayer.ended) {
-          const now = performance.now();
-          // 移动端节流
-          if (WORD_LYRIC_THROTTLE_MS > 0) {
-            if (now - lastWordLyricUpdate >= WORD_LYRIC_THROTTLE_MS) {
-              updateWordFillInActiveLine(audioPlayer.currentTime || 0);
-              lastWordLyricUpdate = now;
-            }
-          } else {
-            // 桌面端每帧更新
-            updateWordFillInActiveLine(audioPlayer.currentTime || 0);
-          }
-          wordLyricRAF = requestAnimationFrame(tick);
-        } else {
-          stopWordLyricLoop();
-        }
-      }
     }
 
     function stopWordLyricLoop() {
