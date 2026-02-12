@@ -5536,7 +5536,7 @@
       wordLyricRAF = requestAnimationFrame(tick);
 
       let lastWordLyricUpdate = 0;
-      const WORD_LYRIC_THROTTLE_MS = isMobile() ? 100 : 0; // 移动端100ms，桌面端0（无限制）
+      const WORD_LYRIC_THROTTLE_MS = isMobile() ? 30 : 0; // 移动端100ms，桌面端0（无限制）
 
       function tick() {
         if (!audioPlayer.paused && !audioPlayer.ended) {
