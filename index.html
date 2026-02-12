@@ -1120,7 +1120,7 @@
     }
 
     .lyrics > .item {
-      position: relative;  
+      position: absolute;
       padding: 20px;
       box-sizing: border-box;
       background-color: transparent;
@@ -1135,7 +1135,6 @@
     .lyrics > .item.highlight {
       transform: scale(1.02);
       color: rgba(255,255,255,1) !important;
-      will-change: transform;
     }
 
     .lyrics > .item .lyric-translation {
@@ -4827,12 +4826,8 @@
         } else {
           data[i].ele.style.color = inactiveColor;
         }
-        
-        // 移动端全屏模式下减少模糊以提高性能
-        const blurAmount = (isMobile() && isMobileLyricsFullscreen) ? 
-          Math.min(Math.abs(i - index) * 0.3, 2) : 
-          (isMobile() ? Math.min(Math.abs(i - index) * 0.5, 3) : Math.abs(i - index));
-        
+
+        const blurAmount = isMobile() ? 0 : Math.abs(i - index);
         data[i].ele.style.filter = `blur(${blurAmount}px)`;
         
         const position = GetLyricsLayout(index, i, data);
@@ -5517,24 +5512,26 @@
       return containerHeight / 3;
     }
 
-    // ===== 逐字歌词：平滑动画循环（rAF）=====
-    let wordLyricRAF = 0;
+    let lastWordLyricUpdate = 0;
+    const WORD_LYRIC_THROTTLE_MS = isMobile() ? 100 : 0; // 移动端100ms，桌面端0（无限制）
 
-    function startWordLyricLoop() {
-      if (wordLyricRAF) return;
-
-      const tick = () => {
-        // 只要在播放就持续
-        if (!audioPlayer.paused && !audioPlayer.ended) {
-          const t = audioPlayer.currentTime || 0;
-          updateWordFillInActiveLine(t);
-          wordLyricRAF = requestAnimationFrame(tick);
+    function tick() {
+      if (!audioPlayer.paused && !audioPlayer.ended) {
+        const now = performance.now();
+        // 移动端节流
+        if (WORD_LYRIC_THROTTLE_MS > 0) {
+          if (now - lastWordLyricUpdate >= WORD_LYRIC_THROTTLE_MS) {
+            updateWordFillInActiveLine(audioPlayer.currentTime || 0);
+            lastWordLyricUpdate = now;
+          }
         } else {
-          stopWordLyricLoop();
+          // 桌面端每帧更新
+          updateWordFillInActiveLine(audioPlayer.currentTime || 0);
         }
-      };
-
-      wordLyricRAF = requestAnimationFrame(tick);
+        wordLyricRAF = requestAnimationFrame(tick);
+      } else {
+        stopWordLyricLoop();
+      }
     }
 
     function stopWordLyricLoop() {
