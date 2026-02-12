@@ -4813,38 +4813,62 @@
       return res + LYRICS_OFFSET;
     }
 
+    const MOBILE_VISIBLE_RANGE = 5; // 可调节，建议 5~8 行
+
     function UpdateLyricsLayout(index, data, init = 1) {
-      // 统一使用白色歌词，适应动态背景
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
       
-      for (let i = 0; i < data.length; i++) {
-        if (!data[i] || !data[i].ele) continue;
-        
-        if (i === index && init) {
-          data[i].ele.style.color = activeColor;
-        } else {
-          data[i].ele.style.color = inactiveColor;
+      // 桌面端：全量更新（原逻辑）
+      if (!isMobile()) {
+        for (let i = 0; i < data.length; i++) {
+          if (!data[i]?.ele) continue;
+          
+          data[i].ele.style.color = i === index ? activeColor : inactiveColor;
+          const blurAmount = Math.abs(i - index);
+          data[i].ele.style.filter = `blur(${blurAmount}px)`;
+          
+          const position = GetLyricsLayout(index, i, data);
+          data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
         }
+        return;
+      }
+      
+      // ---------- 移动端：只更新可见区域，保留原有效果 ----------
+      for (let i = 0; i < data.length; i++) {
+        if (!data[i]?.ele) continue;
         
-        // 移动端全屏模式下减少模糊以提高性能
-        const blurAmount = (isMobile() && isMobileLyricsFullscreen) ? 
-          Math.min(Math.abs(i - index) * 0.3, 2) : 
-          (isMobile() ? Math.min(Math.abs(i - index) * 0.5, 3) : Math.abs(i - index));
+        // 1. 颜色高亮（必须更新，即使不可见也要保持正确状态）
+        data[i].ele.style.color = i === index ? activeColor : inactiveColor;
         
-        data[i].ele.style.filter = `blur(${blurAmount}px)`;
+        // 2. 移动端彻底移除模糊（已确认）
+        data[i].ele.style.filter = 'blur(0px)';
         
-        const position = GetLyricsLayout(index, i, data);
-        
-        let n = (i - index) + 1;
-        if (n > 10) n = 0;
-        
-        const delay = init ? (n * 70 - n * 10) : 0;
-        setTimeout(() => {
-          if (data[i] && data[i].ele) {
+        // 3. 核心优化：仅当歌词行在可见范围内时，重新计算并设置 transform
+        const distance = Math.abs(i - index);
+        if (distance <= MOBILE_VISIBLE_RANGE) {
+          // 精确计算位置（与原逻辑完全一致）
+          const position = GetLyricsLayout(index, i, data);
+          data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
+        } else {
+          // ❗ 不可见行：保留上一次的 transform 值，不重新计算
+          // 这保证了屏幕外歌词位置正确，且不触发重绘
+          // 如果从未设置过 transform，设置一个初始值防止错位
+          if (!data[i].ele.style.transform || data[i].ele.style.transform === 'none') {
+            const position = GetLyricsLayout(index, i, data);
             data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
           }
-        }, delay);
+          // 否则保持原有 transform，不修改
+        }
+      }
+      
+      // 4. （可选）移动端完全禁用 CSS 过渡，进一步节省性能
+      if (init) {
+        setTimeout(() => {
+          document.querySelectorAll('.lyrics .item').forEach(el => {
+            el.style.transition = 'none'; // 移动端不要动画，要丝滑
+          });
+        }, 50);
       }
     }
 
@@ -5068,6 +5092,21 @@
       }
     });
 
+    let lastLyricUpdate = 0;
+    const LYRIC_UPDATE_THROTTLE = isMobile() ? 100 : 0; // 移动端100ms，桌面端无限制
+
+    function throttledUpdateAMLyricsHighlight(currentTime) {
+      if (!isMobile()) {
+        updateAMLyricsHighlight(currentTime);
+        return;
+      }
+      const now = performance.now();
+      if (now - lastLyricUpdate >= LYRIC_UPDATE_THROTTLE) {
+        updateAMLyricsHighlight(currentTime);
+        lastLyricUpdate = now;
+      }
+    }
+
     // 音频事件
     audioPlayer.addEventListener('timeupdate', () => {
       const { currentTime, duration } = audioPlayer;
@@ -5078,7 +5117,7 @@
         durationDisplay.textContent = formatTime(duration);
         
         // 更新 Apple Music 风格歌词
-        updateAMLyricsHighlight(currentTime);
+        throttledUpdateAMLyricsHighlight(audioPlayer.currentTime);
       
         // 逐字歌词按词高亮（若当前行含逐字 span）
         updateWordFillInActiveLine(currentTime);
@@ -5516,24 +5555,17 @@
       return containerHeight / 3;
     }
 
+    // ===== 逐字歌词：平滑动画循环（rAF）=====
     let wordLyricRAF = 0;
-    let lastWordLyricUpdate = 0;
-    const WORD_LYRIC_THROTTLE_MS = isMobile() ? 100000 : 0; // 移动端节流100ms
 
     function startWordLyricLoop() {
       if (wordLyricRAF) return;
 
       const tick = () => {
+        // 只要在播放就持续
         if (!audioPlayer.paused && !audioPlayer.ended) {
-          const now = performance.now();
-          if (WORD_LYRIC_THROTTLE_MS > 0) {
-            if (now - lastWordLyricUpdate >= WORD_LYRIC_THROTTLE_MS) {
-              updateWordFillInActiveLine(audioPlayer.currentTime || 0);
-              lastWordLyricUpdate = now;
-            }
-          } else {
-            updateWordFillInActiveLine(audioPlayer.currentTime || 0);
-          }
+          const t = audioPlayer.currentTime || 0;
+          updateWordFillInActiveLine(t);
           wordLyricRAF = requestAnimationFrame(tick);
         } else {
           stopWordLyricLoop();
@@ -5787,5 +5819,3 @@
   </script>
 </body>
 </html>
-
-
