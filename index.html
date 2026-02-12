@@ -5518,7 +5518,7 @@
 
     let wordLyricRAF = 0;
     let lastWordLyricUpdate = 0;
-    const WORD_LYRIC_THROTTLE_MS = isMobile() ? 100 : 0; // 移动端节流100ms
+    const WORD_LYRIC_THROTTLE_MS = isMobile() ? 10 : 0; // 移动端节流100ms
 
     function startWordLyricLoop() {
       if (wordLyricRAF) return;
@@ -5787,3 +5787,4 @@
   </script>
 </body>
 </html>
+
