@@ -5516,17 +5516,24 @@
       return containerHeight / 3;
     }
 
-    // ===== 逐字歌词：平滑动画循环（rAF）=====
     let wordLyricRAF = 0;
+    let lastWordLyricUpdate = 0;
+    const WORD_LYRIC_THROTTLE_MS = isMobile() ? 100 : 0; // 移动端节流100ms
 
     function startWordLyricLoop() {
       if (wordLyricRAF) return;
 
       const tick = () => {
-        // 只要在播放就持续
         if (!audioPlayer.paused && !audioPlayer.ended) {
-          const t = audioPlayer.currentTime || 0;
-          updateWordFillInActiveLine(t);
+          const now = performance.now();
+          if (WORD_LYRIC_THROTTLE_MS > 0) {
+            if (now - lastWordLyricUpdate >= WORD_LYRIC_THROTTLE_MS) {
+              updateWordFillInActiveLine(audioPlayer.currentTime || 0);
+              lastWordLyricUpdate = now;
+            }
+          } else {
+            updateWordFillInActiveLine(audioPlayer.currentTime || 0);
+          }
           wordLyricRAF = requestAnimationFrame(tick);
         } else {
           stopWordLyricLoop();
