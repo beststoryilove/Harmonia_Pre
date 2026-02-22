@@ -1804,12 +1804,26 @@
       padding: 15px;
       font-size: 24px;
       line-height: 36px;
-      transition: all 0.3s ease;
+      transition: transform 0.3s cubic-bezier(.19,.11,0,1), opacity 0.25s ease, color 0.3s ease, filter 0.3s ease;
       user-select: none !important;
       -webkit-user-select: none !important;
       -moz-user-select: none !important;
       -ms-user-select: none !important;
       pointer-events: auto !important;
+      contain: layout style paint;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+    }
+
+    body.mobile-lyrics-fullscreen .lyrics > .item:not(.is-visible) {
+      opacity: 0;
+      pointer-events: none !important;
+      filter: none !important;
+    }
+
+    /* 移动端全屏逐字歌词由 rAF 驱动，禁用 width transition 叠加 */
+    body.mobile-lyrics-fullscreen .word-lyric::after {
+      transition: none !important;
     }
 
     body.mobile-lyrics-fullscreen .lyrics > .item.highlight {
@@ -2150,10 +2164,8 @@
 
       .lyrics > .item {
         padding: 15px !important;
-        content-visibility: visible;
-        contain: layout paint style;
-        backface-visibility: hidden;
-        transform: translateZ(0);
+        content-visibility: auto;
+        contain-intrinsic-size: 0px 80px; /* 初始高度，后续动态更新 */
       }
 
       /* 移动端全屏歌词的特殊样式 */
@@ -2169,12 +2181,6 @@
 
       body.mobile-lyrics-fullscreen .lyrics > .item {
         padding: 20px !important;
-      }
-
-      .lyrics > .item,
-      body.mobile-lyrics-fullscreen .lyrics > .item {
-        filter: none !important;
-        transition: transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear !important;
       }
     }
 
@@ -2780,25 +2786,11 @@
     const LINE_HEIGHT = 20;
     let LYRICS_OFFSET = window.innerHeight / 3;
     let lastLyric = -1;
-    let lyricsHeightsPrefix = [0];
-
-    function rebuildLyricsMetrics(data = amLyricsData) {
-      if (!Array.isArray(data) || data.length === 0) {
-        lyricsHeightsPrefix = [0];
-        return;
-      }
-
-      const prefix = new Array(data.length + 1);
-      prefix[0] = 0;
-
-      for (let i = 0; i < data.length; i++) {
-        const el = data[i]?.ele;
-        const h = el ? el.offsetHeight : 0;
-        prefix[i + 1] = prefix[i] + h + LINE_HEIGHT;
-      }
-
-      lyricsHeightsPrefix = prefix;
-    }
+    let lyricsMetrics = null;
+    let lyricsMetricsRef = null;
+    const MOBILE_LYRIC_WINDOW = 9;
+    const MOBILE_WORD_FPS = 30;
+    const MOBILE_WORD_PROGRESS_STEP = 1.2;
 
     // 桌面歌词
     let desktopLyricsWs = null;
@@ -3049,7 +3041,7 @@
           // 歌词容器从隐藏变为显示，重新计算偏移并刷新布局
           LYRICS_OFFSET = calculateLyricsOffset();
           if (amLyricsData.length > 0 && lastLyric >= 0) {
-            UpdateLyricsLayout(lastLyric, [lastLyric], amLyricsData, 0);
+            UpdateLyricsLayout(lastLyric, amLyricsData, 0);
           }
         } else {
           rightcontent.classList.add('hidden');
@@ -3079,9 +3071,8 @@
 
       // 无论进入/退出全屏，重新计算偏移并刷新歌词布局
       LYRICS_OFFSET = calculateLyricsOffset();
-      rebuildLyricsMetrics(amLyricsData);
       if (amLyricsData.length > 0 && lastLyric >= 0) {
-        UpdateLyricsLayout(lastLyric, [lastLyric], amLyricsData, 0);
+        UpdateLyricsLayout(lastLyric, amLyricsData, 0);
       }
     }
 
@@ -4056,6 +4047,8 @@
       rawLyricText = '';
       rawTlyricText = '';
       lastLyric = -1;
+      lyricsMetrics = null;
+      lyricsMetricsRef = null;
 
       const yrcText = neteaseLyricJson?.yrc?.lyric || '';
       const lrcText = neteaseLyricJson?.lrc?.lyric || '';
@@ -4130,6 +4123,7 @@
         div.style.transform = 'translateZ(0)';
 
         const p = document.createElement('p');
+        line.wordSpans = [];
 
         line.words.forEach((w, idx) => {
           const span = document.createElement('span');
@@ -4143,6 +4137,8 @@
 
           // 初始化填充进度
           span.style.setProperty('--p', '0%');
+          span._lastP = -1;
+          line.wordSpans.push(span);
 
           p.appendChild(span);
         });
@@ -4174,26 +4170,12 @@
         UpdateLyricsLayout(0, [0], amLyricsData, 0);
         setTimeout(() => {
           const items = amLyrics.querySelectorAll('.item');
-          const transitionStr = isMobile()
-            ? 'transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear'
-            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           items.forEach(item => {
-            item.style.transition = transitionStr;
+            item.style.transition =
+              'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           });
         }, 50);
       });
-
-      if (isMobile()) {
-        setTimeout(() => {
-          rebuildLyricsMetrics(amLyricsData);
-          document.querySelectorAll('.lyrics .item').forEach(el => {
-            const height = el.offsetHeight;
-            if (height > 0) {
-              el.style.containIntrinsicSize = `0px ${height}px`; // 内联覆盖
-            }
-          });
-        }, 100);
-      }
     }
 
     function updateWordFillInActiveLine(currentTime) {
@@ -4202,27 +4184,36 @@
       const line = amLyricsData[lastLyric];
       if (!line?.ele) return;
 
-      const spans = line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]');
-      if (!spans.length) return;
+      let spans = line.wordSpans;
+      if (!spans || !spans.length) {
+        const found = line.ele.querySelectorAll('span.word-lyric[data-wstart][data-wend]');
+        if (!found.length) return;
+        spans = Array.from(found);
+        line.wordSpans = spans;
+        spans.forEach(sp => {
+          if (sp._lastP == null) sp._lastP = -1;
+        });
+      }
 
-      spans.forEach(sp => {
+      const minStep = isMobile() ? MOBILE_WORD_PROGRESS_STEP : 0.15;
+
+      for (const sp of spans) {
         const ws = parseFloat(sp.dataset.wstart);
         const we = parseFloat(sp.dataset.wend);
+        if (!Number.isFinite(ws) || !Number.isFinite(we)) continue;
 
         let p = 0;
-        if (currentTime <= ws) {
-          p = 0;
-        } else if (currentTime >= we) {
-          p = 100;
-        } else {
-          const dur = Math.max(we - ws, 0.001);
-          p = ((currentTime - ws) / dur) * 100;
-          if (p < 0) p = 0;
-          if (p > 100) p = 100;
-        }
+        if (currentTime <= ws) p = 0;
+        else if (currentTime >= we) p = 100;
+        else p = ((currentTime - ws) / Math.max(we - ws, 0.001)) * 100;
 
-        sp.style.setProperty('--p', `${p}%`);
-      });
+        p = Math.max(0, Math.min(100, p));
+        const last = sp._lastP ?? -1;
+        if (Math.abs(p - last) >= minStep) {
+          sp.style.setProperty('--p', `${p}%`);
+          sp._lastP = p;
+        }
+      }
     }
 
     // 检测是否为外语歌词
@@ -4851,6 +4842,8 @@
       rawLyricText = '';
       rawTlyricText = '';
       lastLyric = -1; // 重置歌词索引
+      lyricsMetrics = null;
+      lyricsMetricsRef = null;
       
       if (!lyricResponse || !lyricResponse.lyric) {
         const div = document.createElement('div');
@@ -4919,26 +4912,11 @@
         // 添加过渡效果
         setTimeout(() => {
           const items = amLyrics.querySelectorAll('.item');
-          const transitionStr = isMobile()
-            ? 'transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear'
-            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           items.forEach(item => {
-            item.style.transition = transitionStr;
+            item.style.transition = 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           });
         }, 50);
       });
-
-      if (isMobile()) {
-        setTimeout(() => {
-          rebuildLyricsMetrics(amLyricsData);
-          document.querySelectorAll('.lyrics .item').forEach(el => {
-            const height = el.offsetHeight;
-            if (height > 0) {
-              el.style.containIntrinsicSize = `0px ${height}px`; // 内联覆盖
-            }
-          });
-        }, 100);
-      }
     }
 
     function median(arr) {
@@ -5017,56 +4995,80 @@
       return median(diffs);
     }
 
-    function GetLyricsLayout(now, to, data) {
-      if (!Array.isArray(data) || data.length === 0) return LYRICS_OFFSET;
+    function rebuildLyricsMetrics(data = amLyricsData) {
+      if (!Array.isArray(data) || !data.length) {
+        lyricsMetrics = null;
+        lyricsMetricsRef = null;
+        return;
+      }
 
-      const maxIndex = data.length - 1;
-      now = Math.max(0, Math.min(now, maxIndex));
-      to = Math.max(0, Math.min(to, maxIndex));
+      const prefix = new Array(data.length + 1);
+      prefix[0] = 0;
 
-      if (lyricsHeightsPrefix.length !== data.length + 1) {
+      for (let i = 0; i < data.length; i++) {
+        const line = data[i];
+        const ele = line?.ele;
+        const h = ele ? ele.offsetHeight : 0;
+        line._h = h;
+        prefix[i + 1] = prefix[i] + h + LINE_HEIGHT;
+
+        if (isMobile() && ele && h > 0) {
+          ele.style.containIntrinsicSize = `0px ${h}px`;
+        }
+      }
+
+      lyricsMetricsRef = data;
+      lyricsMetrics = { prefix };
+    }
+
+    function ensureLyricsMetrics(data = amLyricsData) {
+      if (!Array.isArray(data) || !data.length) return;
+      if (!lyricsMetrics || lyricsMetricsRef !== data || lyricsMetrics.prefix.length !== data.length + 1) {
         rebuildLyricsMetrics(data);
       }
+    }
 
-      let res = 0;
-      if (to > now) {
-        res = lyricsHeightsPrefix[to] - lyricsHeightsPrefix[now];
-      } else if (to < now) {
-        res = -(lyricsHeightsPrefix[now] - lyricsHeightsPrefix[to]);
-      }
-
-      return res + LYRICS_OFFSET;
+    function GetLyricsLayout(now, to, data) {
+      if (!Array.isArray(data) || !data.length) return LYRICS_OFFSET;
+      const n = Math.max(0, Math.min(now, data.length - 1));
+      const t = Math.max(0, Math.min(to, data.length - 1));
+      ensureLyricsMetrics(data);
+      return (lyricsMetrics.prefix[t] - lyricsMetrics.prefix[n]) + LYRICS_OFFSET;
     }
 
     function UpdateLyricsLayout(mainIndex, highlightIndices, data, init = 1) {
+      if (!Array.isArray(data) || !data.length) return;
+
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
-      const mobile = isMobile();
-      const useStagger = !!init && !mobile;
       const highlightSet = new Set(Array.isArray(highlightIndices) ? highlightIndices : [mainIndex]);
+      const mobileMode = isMobile() || isMobileLyricsFullscreen;
+      const windowSize = mobileMode ? MOBILE_LYRIC_WINDOW : Number.MAX_SAFE_INTEGER;
+      const start = Math.max(0, mainIndex - windowSize);
+      const end = Math.min(data.length - 1, mainIndex + windowSize);
 
-      if (!Array.isArray(data) || data.length === 0) return;
-      if (lyricsHeightsPrefix.length !== data.length + 1) {
-        rebuildLyricsMetrics(data);
-      }
+      ensureLyricsMetrics(data);
 
       for (let i = 0; i < data.length; i++) {
         if (!data[i] || !data[i].ele) continue;
 
-        const isHighlight = highlightSet.has(i);
-        data[i].ele.style.color = isHighlight ? activeColor : inactiveColor;
-
-        if (mobile) {
-          data[i].ele.style.filter = 'none';
-        } else {
-          const blurAmount = isHighlight ? 0 : Math.abs(i - mainIndex);
-          data[i].ele.style.filter = `blur(${blurAmount}px)`;
+        const inWindow = i >= start && i <= end;
+        if (mobileMode) {
+          data[i].ele.classList.toggle('is-visible', inWindow);
+          if (!inWindow) continue;
         }
+
+        const isHighlighted = highlightSet.has(i);
+        data[i].ele.style.color = isHighlighted ? activeColor : inactiveColor;
+
+        const dist = Math.abs(i - mainIndex);
+        const blurAmount = isHighlighted ? 0 : (mobileMode ? Math.min(dist, 6) : dist);
+        data[i].ele.style.filter = `blur(${blurAmount}px)`;
 
         const position = GetLyricsLayout(mainIndex, i, data);
 
-        if (useStagger) {
-          const delay = Math.min(Math.abs(i - mainIndex) * 20, 300);
+        if (init && !mobileMode) {
+          const delay = Math.min(dist * 20, 300);
           setTimeout(() => {
             if (data[i] && data[i].ele) {
               data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
@@ -5092,10 +5094,14 @@
       if (activeIndex !== -1 && lastLyric !== activeIndex) {
         // 重置上一行的逐字歌词填充
         if (lastLyric >= 0 && lastLyric < amLyricsData.length && amLyricsData[lastLyric].ele) {
-          const prevSpans = amLyricsData[lastLyric].ele.querySelectorAll('span.word-lyric');
-          prevSpans.forEach(span => {
-            span.style.setProperty('--p', '0%');
-          });
+          const prevLine = amLyricsData[lastLyric];
+          const prevSpans = prevLine.wordSpans;
+          if (prevSpans?.length) {
+            prevSpans.forEach(span => {
+              span.style.setProperty('--p', '0%');
+              span._lastP = 0;
+            });
+          }
         }
 
         const THRESHOLD = 0.4; // 时间差阈值（秒），可根据需要调整
@@ -5133,8 +5139,8 @@
         let scrollBaseIndex = maxIdx;
 
         // 判断是否需要立即更新（时间差小于0.3秒）
-        let useDelay = !isMobile(); // 移动端直接关闭级联延迟动画
-        if (useDelay && lastLyric >= 0 && lastLyric < amLyricsData.length && activeIndex < amLyricsData.length) {
+        let useDelay = true;
+        if (lastLyric >= 0 && lastLyric < amLyricsData.length && activeIndex < amLyricsData.length) {
           const timeDiff = Math.abs(amLyricsData[activeIndex].time - amLyricsData[lastLyric].time);
           if (timeDiff < 0.3) {
             useDelay = false;
@@ -5373,7 +5379,7 @@
         throttledUpdateAMLyricsHighlight(audioPlayer.currentTime);
       
         // 逐字歌词按词高亮（若当前行含逐字 span）
-        updateWordFillInActiveLine(currentTime);
+        if (!wordLyricRAF) updateWordFillInActiveLine(currentTime);
         
         // 发送时间到桌面歌词
         sendCurrentTimeToDesktop(currentTime);
@@ -5830,11 +5836,16 @@
     function startWordLyricLoop() {
       if (wordLyricRAF) return;
 
-      const tick = () => {
-        // 只要在播放就持续
+      let lastTs = 0;
+      const frameInterval = isMobile() ? (1000 / MOBILE_WORD_FPS) : 0;
+
+      const tick = (ts) => {
         if (!audioPlayer.paused && !audioPlayer.ended) {
-          const t = audioPlayer.currentTime || 0;
-          updateWordFillInActiveLine(t);
+          const hiddenMobileLyrics = isMobile() && rightcontent.classList.contains('hidden');
+          if (!hiddenMobileLyrics && (!frameInterval || ts - lastTs >= frameInterval)) {
+            updateWordFillInActiveLine(audioPlayer.currentTime || 0);
+            lastTs = ts;
+          }
           wordLyricRAF = requestAnimationFrame(tick);
         } else {
           stopWordLyricLoop();
@@ -5942,6 +5953,7 @@
         LYRICS_OFFSET = calculateLyricsOffset();
         // 如果有歌词数据，重新布局
         if (amLyricsData.length > 0 && lastLyric >= 0) {
+          rebuildLyricsMetrics(amLyricsData);
           UpdateLyricsLayout(lastLyric, [lastLyric], amLyricsData, 0);
         }
         
