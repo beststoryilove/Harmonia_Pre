@@ -1804,14 +1804,12 @@
       padding: 15px;
       font-size: 24px;
       line-height: 36px;
-      transition: transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out !important;
+      transition: all 0.3s ease;
       user-select: none !important;
       -webkit-user-select: none !important;
       -moz-user-select: none !important;
       -ms-user-select: none !important;
       pointer-events: auto !important;
-      content-visibility: visible !important;
-      contain-intrinsic-size: auto !important;
     }
 
     body.mobile-lyrics-fullscreen .lyrics > .item.highlight {
@@ -2152,8 +2150,10 @@
 
       .lyrics > .item {
         padding: 15px !important;
-        content-visibility: auto;
-        contain-intrinsic-size: 0px 80px; /* 初始高度，后续动态更新 */
+        content-visibility: visible;
+        contain: layout paint style;
+        backface-visibility: hidden;
+        transform: translateZ(0);
       }
 
       /* 移动端全屏歌词的特殊样式 */
@@ -2169,6 +2169,15 @@
 
       body.mobile-lyrics-fullscreen .lyrics > .item {
         padding: 20px !important;
+      }
+
+      .lyrics > .item,
+      body.mobile-lyrics-fullscreen .lyrics > .item {
+        /* 移除 filter: none !important，允许应用模糊 */
+        /* 恢复果冻感的贝塞尔曲线，并加入 opacity 和 filter 的过渡 */
+        transition: transform 0.6s cubic-bezier(.19,.11,0,1), color 0.4s ease-in-out, filter 0.4s ease-in-out, opacity 0.4s ease-in-out !important;
+        /* 开启硬件加速提示，优化滑动性能 */
+        will-change: transform, filter, opacity;
       }
     }
 
@@ -2774,6 +2783,25 @@
     const LINE_HEIGHT = 20;
     let LYRICS_OFFSET = window.innerHeight / 3;
     let lastLyric = -1;
+    let lyricsHeightsPrefix = [0];
+
+    function rebuildLyricsMetrics(data = amLyricsData) {
+      if (!Array.isArray(data) || data.length === 0) {
+        lyricsHeightsPrefix = [0];
+        return;
+      }
+
+      const prefix = new Array(data.length + 1);
+      prefix[0] = 0;
+
+      for (let i = 0; i < data.length; i++) {
+        const el = data[i]?.ele;
+        const h = el ? el.offsetHeight : 0;
+        prefix[i + 1] = prefix[i] + h + LINE_HEIGHT;
+      }
+
+      lyricsHeightsPrefix = prefix;
+    }
 
     // 桌面歌词
     let desktopLyricsWs = null;
@@ -3054,6 +3082,7 @@
 
       // 无论进入/退出全屏，重新计算偏移并刷新歌词布局
       LYRICS_OFFSET = calculateLyricsOffset();
+      rebuildLyricsMetrics(amLyricsData);
       if (amLyricsData.length > 0 && lastLyric >= 0) {
         UpdateLyricsLayout(lastLyric, [lastLyric], amLyricsData, 0);
       }
@@ -4144,18 +4173,22 @@
 
       requestAnimationFrame(() => {
         LYRICS_OFFSET = calculateLyricsOffset();
+        rebuildLyricsMetrics(amLyricsData);
         UpdateLyricsLayout(0, [0], amLyricsData, 0);
         setTimeout(() => {
           const items = amLyrics.querySelectorAll('.item');
+          const transitionStr = isMobile()
+            ? 'transform 0.6s cubic-bezier(.19,.11,0,1), color 0.4s ease-in-out, filter 0.4s ease-in-out, opacity 0.4s ease-in-out'
+            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           items.forEach(item => {
-            item.style.transition =
-              'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
+            item.style.transition = transitionStr;
           });
         }, 50);
       });
 
       if (isMobile()) {
         setTimeout(() => {
+          rebuildLyricsMetrics(amLyricsData);
           document.querySelectorAll('.lyrics .item').forEach(el => {
             const height = el.offsetHeight;
             if (height > 0) {
@@ -4882,19 +4915,25 @@
       // 重新计算偏移量（确保容器已渲染）
       requestAnimationFrame(() => {
         LYRICS_OFFSET = calculateLyricsOffset();
+        rebuildLyricsMetrics(lyrics);
         // 初始化歌词布局
         UpdateLyricsLayout(0, [0], lyrics, 0);
         
         // 添加过渡效果
         setTimeout(() => {
           const items = amLyrics.querySelectorAll('.item');
+          const transitionStr = isMobile()
+            ? 'transform 0.6s cubic-bezier(.19,.11,0,1), color 0.4s ease-in-out, filter 0.4s ease-in-out, opacity 0.4s ease-in-out'
+            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
           items.forEach(item => {
-            item.style.transition = 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
+            item.style.transition = transitionStr;
           });
         }, 50);
       });
+
       if (isMobile()) {
         setTimeout(() => {
+          rebuildLyricsMetrics(amLyricsData);
           document.querySelectorAll('.lyrics .item').forEach(el => {
             const height = el.offsetHeight;
             if (height > 0) {
@@ -4981,59 +5020,80 @@
       return median(diffs);
     }
 
-    function getLyricsGap() {
-      // 全屏歌词下增大行间位移间隔，避免高字号时重叠
-      return document.body.classList.contains('mobile-lyrics-fullscreen') ? 34 : LINE_HEIGHT;
-    }
-
     function GetLyricsLayout(now, to, data) {
-      let res = 0;
-      const GAP = getLyricsGap();
+      if (!Array.isArray(data) || data.length === 0) return LYRICS_OFFSET;
 
-      // 判断滚动方向
-      if (to > now) { // 向下滚动
-        for (let i = now; i < to; i++) {
-          if (data[i] && data[i].ele) {
-            res += data[i].ele.offsetHeight + GAP;
-          }
-        }
-      } else { // 向上滚动
-        for (let i = now; i > to; i--) {
-          if (data[i - 1] && data[i - 1].ele) {
-            res -= data[i - 1].ele.offsetHeight + GAP;
-          }
-        }
+      const maxIndex = data.length - 1;
+      now = Math.max(0, Math.min(now, maxIndex));
+      to = Math.max(0, Math.min(to, maxIndex));
+
+      if (lyricsHeightsPrefix.length !== data.length + 1) {
+        rebuildLyricsMetrics(data);
       }
-      
-      // 使用动态计算的偏移值
+
+      let res = 0;
+      if (to > now) {
+        res = lyricsHeightsPrefix[to] - lyricsHeightsPrefix[now];
+      } else if (to < now) {
+        res = -(lyricsHeightsPrefix[now] - lyricsHeightsPrefix[to]);
+      }
+
       return res + LYRICS_OFFSET;
     }
 
     function UpdateLyricsLayout(mainIndex, highlightIndices, data, init = 1) {
       const activeColor = "rgba(255, 255, 255, 1)";
       const inactiveColor = "rgba(255, 255, 255, 0.2)";
+      const mobile = isMobile();
+      // 移动端也允许初始化的轻微交错动画，但降低延迟以兼顾性能
+      const useStagger = !!init; 
+      const highlightSet = new Set(Array.isArray(highlightIndices) ? highlightIndices : [mainIndex]);
+
+      if (!Array.isArray(data) || data.length === 0) return;
+      if (lyricsHeightsPrefix.length !== data.length + 1) {
+        rebuildLyricsMetrics(data);
+      }
 
       for (let i = 0; i < data.length; i++) {
         if (!data[i] || !data[i].ele) continue;
 
-        // 颜色：如果在高亮集合中则使用 activeColor，否则使用 inactiveColor
-        data[i].ele.style.color = highlightIndices.includes(i) ? activeColor : inactiveColor;
+        const isHighlight = highlightSet.has(i);
+        const distance = Math.abs(i - mainIndex);
+        
+        data[i].ele.style.color = isHighlight ? activeColor : inactiveColor;
 
-        // 模糊：高亮行不模糊，其他行按距离主行计算
-        const blurAmount = highlightIndices.includes(i) ? 0 : Math.abs(i - mainIndex);
-        data[i].ele.style.filter = `blur(${blurAmount}px)`;
+        // 核心性能优化部分
+        if (mobile) {
+          // 移动端：限制最大模糊度为 2.5px，防止 GPU 过载
+          const finalBlur = isHighlight ? 0 : Math.min(distance * 0.5, 2.5);
+          data[i].ele.style.filter = `blur(${finalBlur}px)`;
+          
+          // 移动端：距离当前播放行超过 6 行的直接全透明，浏览器会跳过这些元素的复杂渲染
+          if (distance > 6) {
+            data[i].ele.style.opacity = '0';
+            data[i].ele.style.pointerEvents = 'none';
+          } else {
+            data[i].ele.style.opacity = '1';
+            data[i].ele.style.pointerEvents = 'auto';
+          }
+        } else {
+          // 桌面端保持原有逻辑
+          const blurAmount = isHighlight ? 0 : distance;
+          data[i].ele.style.filter = `blur(${blurAmount}px)`;
+          data[i].ele.style.opacity = '1';
+        }
 
-        // 计算目标位置（始终以 mainIndex 为基准）
         const position = GetLyricsLayout(mainIndex, i, data);
 
-        if (init) {
-          const delay = Math.min(Math.abs(i - mainIndex) * 20, 300);
+        if (useStagger && !mobile) {
+          const delay = Math.min(distance * 20, 300);
           setTimeout(() => {
             if (data[i] && data[i].ele) {
               data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
             }
           }, delay);
         } else {
+          // 移动端直接应用位移，利用 CSS 里的贝塞尔曲线实现果冻弹跳
           data[i].ele.style.transform = `translateY(${position}px) translateZ(0)`;
         }
       }
@@ -5094,8 +5154,8 @@
         let scrollBaseIndex = maxIdx;
 
         // 判断是否需要立即更新（时间差小于0.3秒）
-        let useDelay = true;
-        if (lastLyric >= 0 && lastLyric < amLyricsData.length && activeIndex < amLyricsData.length) {
+        let useDelay = !isMobile(); // 移动端直接关闭级联延迟动画
+        if (useDelay && lastLyric >= 0 && lastLyric < amLyricsData.length && activeIndex < amLyricsData.length) {
           const timeDiff = Math.abs(amLyricsData[activeIndex].time - amLyricsData[lastLyric].time);
           if (timeDiff < 0.3) {
             useDelay = false;
