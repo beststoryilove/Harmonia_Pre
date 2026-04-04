@@ -5480,42 +5480,52 @@
             }
           } else if (source === 'kugou') {
               isKugouMode = true;
-              try {
-                  const songName = song.name || '未知歌曲';
-                  const artist = Array.isArray(song.artist) ? song.artist[0] : (song.artist || '');
-                  
-                  console.log(`[酷狗] 开始处理歌曲: ${songName} - ${artist}`);
-                  
-                  // 1. 获取酷狗原文
-                  const wordLines = await fetchKugouLyricsOnly(songName, artist);
-                  console.log(`[酷狗] 原文获取成功，共 ${wordLines.length} 行`);
-                  
-                  // 2. 强制请求网易云翻译（不依赖任何开关，每次都请求）
-                  let translationLines = [];
-                  try {
+              const songName = song.name || '未知歌曲';
+              const artist = Array.isArray(song.artist)
+                ? song.artist.filter(Boolean).join(' ')
+                : (song.artist || '');
+
+              console.log(`[酷狗] 开始处理歌曲: ${songName} - ${artist}`);
+
+              const [wordLyricsResult, translationResult] = await Promise.allSettled([
+                  fetchKugouLyricsOnly(songName, artist),
+                  (async () => {
                       console.log(`[酷狗] 开始请求网易云翻译: ${songName} - ${artist}`);
-                      translationLines = await fetchNeteaseTranslation(songName, artist);
-                      console.log(`[酷狗] 网易云翻译获取成功，共 ${translationLines.length} 行`);
-                  } catch (e) {
-                      console.error(`[酷狗] 网易云翻译获取失败:`, e);
-                  }
-                  
-                  // 3. 合并翻译
+                      const result = await fetchNeteaseTranslation(songName, artist);
+                      console.log(`[酷狗] 网易云翻译获取成功，共 ${result.length} 行`);
+                      return result;
+                  })()
+              ]);
+
+              let wordLines = [];
+              let translationLines = [];
+
+              if (wordLyricsResult.status === 'fulfilled') {
+                  wordLines = Array.isArray(wordLyricsResult.value) ? wordLyricsResult.value : [];
+                  console.log(`[酷狗] 原文获取成功，共 ${wordLines.length} 行`);
+              } else {
+                  console.error('[酷狗] 逐字歌词获取失败:', wordLyricsResult.reason);
+                  showError(`酷狗歌词失败: ${wordLyricsResult.reason?.message || '未知错误'}`, 3000);
+              }
+
+              if (translationResult.status === 'fulfilled') {
+                  translationLines = Array.isArray(translationResult.value) ? translationResult.value : [];
+              } else {
+                  console.error('[酷狗] 网易云翻译获取失败:', translationResult.reason);
+              }
+
+              if (wordLines.length) {
                   let finalLines = wordLines;
                   if (translationLines.length) {
                       finalLines = mergeTranslationToWordLines(wordLines, translationLines);
-                      console.log(`[酷狗] 已合并翻译`);
+                      console.log('[酷狗] 已合并翻译');
                   } else {
-                      console.log(`[酷狗] 无翻译可用，仅显示原文`);
+                      console.log('[酷狗] 无翻译可用，仅显示原文');
                   }
-                  
-                  // 4. 显示酷狗歌词
+
                   displayKugouWordLyrics(finalLines);
                   usedWordLyrics = true;
-                  
-              } catch (e) {
-                  console.error('[酷狗] 逐字歌词获取失败:', e);
-                  showError(`酷狗歌词失败: ${e.message}`, 3000);
+              } else {
                   usedWordLyrics = false;
               }
           }
