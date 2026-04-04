@@ -281,10 +281,10 @@
       justify-content: center;
       overflow: hidden;
       transition: all 0.42s cubic-bezier(0.22, 0.61, 0.36, 1);
-      z-index: 1000;
+      z-index: 2102;
       cursor: pointer;
       user-select: none;
-      width: 180px;
+      width: var(--dynamic-island-collapsed-width, 180px);
       height: 40px;
       padding: 0;
       box-shadow: 
@@ -375,6 +375,17 @@
       font-weight: 600;
       letter-spacing: 0.2px;
       text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+    }
+
+    .collapsed-text.measure {
+      position: fixed;
+      top: -9999px;
+      left: -9999px;
+      visibility: hidden;
+      pointer-events: none;
+      white-space: nowrap;
+      max-width: none;
+      z-index: -1;
     }
 
     .island-expanded {
@@ -1823,8 +1834,8 @@
       width: 100%;
       height: 100%;
       background: rgba(0, 0, 0, 0.55);
-      backdrop-filter: blur(6px);
-      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1840,9 +1851,9 @@
     }
 
     .settings-modal-content {
-      background: rgba(22, 22, 27, 0.68) !important;
-      backdrop-filter: blur(40px) saturate(210%) !important;
-      -webkit-backdrop-filter: blur(40px) saturate(210%) !important;
+      background: rgba(22, 22, 27, 0.96) !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
       border: var(--liquid-border-dark) !important;
       border-radius: 28px;
       padding: 28px;
@@ -2209,6 +2220,17 @@
       transform: translateX(5px);
     }
 
+    /* 歌词动画方案 */
+    body.lyrics-performance-mode .lyrics > .item {
+      will-change: auto;
+      backface-visibility: visible;
+      text-shadow: none !important;
+    }
+
+    body.lyrics-performance-mode .lyrics > .item .lyric-translation {
+      text-shadow: none !important;
+    }
+
     /* 响应式设计 */
     @media (max-width: 1200px) {
       .main-player {
@@ -2302,7 +2324,7 @@
       }
 
       .dynamic-island {
-        width: 160px;
+        width: var(--dynamic-island-collapsed-width, 160px);
         height: 36px;
         top: 10px;
       }
@@ -2584,6 +2606,7 @@
       color: rgba(0, 0, 0, 0.9);
     }
 
+
     body.light-theme .island-search-input {
       color: var(--text-light);
     }
@@ -2846,7 +2869,7 @@
       border-color: #ff2d55;
     }
   </style>
-</head>
+<link rel="stylesheet" href="/Static/css/Global.css"/><link rel="stylesheet" href="/Web/css/Global.css"/><link rel="stylesheet" href="/Web/css/XYChatGPT.css"/><link rel="stylesheet" href="/Static/css/Global.css"/><link rel="stylesheet" href="/Web/css/Global.css"/><link rel="stylesheet" href="/Web/css/XYChatGPT.css"/></head>
 <body>
   <div class="am-background"></div>
 
@@ -2890,6 +2913,7 @@
   </div>
 
   <!-- 菜单按钮 -->
+
   <div class="menu-toggle" id="menuToggle">
     <i class="fas fa-bars"></i>
   </div>
@@ -2980,7 +3004,7 @@
             <div style="margin-bottom: 8px; font-weight: 500;">逐字歌词获取方式</div>
             <div class="radio-group">
               <label class="radio-label">
-                <input type="radio" name="wordLyricsSource" value="netease" checked>
+                <input type="radio" name="wordLyricsSource" value="netease">
                 <span>网易云逐字歌词库 <span style="color: var(--text-muted-dark);">（简单，开箱即用，但不全）</span></span>
               </label>
               <label class="radio-label">
@@ -3004,6 +3028,21 @@
       <!-- 视觉选项卡 -->
       <div class="settings-tab-content" data-tab="visual">
         <div class="settings-section">
+          <h3 class="settings-section-title">歌词动画</h3>
+          <div class="radio-group" style="margin-left: 0;">
+            <label class="radio-label">
+              <input type="radio" name="lyricsAnimationMode" value="visual" checked>
+              <span>视觉优先 <span style="color: var(--text-muted-dark);">（保留当前桌面端 / 移动端歌词动画）</span></span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="lyricsAnimationMode" value="performance">
+              <span>性能优先 <span style="color: var(--text-muted-dark);">（桌面端和移动端共用简化动画方案）</span></span>
+            </label>
+          </div>
+          <p class="settings-hint">切换后立即生效，可随时改回。</p>
+        </div>
+
+        <div class="settings-section">
           <h3 class="settings-section-title">专辑图</h3>
           <div class="settings-option">
             <label class="switch">
@@ -3019,7 +3058,7 @@
         </div>
       </div>
 
-      <!-- 酷狗选项卡（仅 UI） -->
+      <!-- 酷狗选项卡 -->
       <div class="settings-tab-content" data-tab="kugou">
         <div class="settings-section">
           <h3 class="settings-section-title">酷狗音乐概念版 API 登录</h3>
@@ -3243,6 +3282,7 @@
     const isMobileDevice = () => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const collapsedTextSpan = document.querySelector('.collapsed-text'); // 灵动岛折叠文字
     const ALBUM_KEY = 'albumEffectEnabled';
+    const LYRICS_ANIMATION_MODE_KEY = 'lyricsAnimationMode';
 
     // ===== State =====
     let currentPage = 1;
@@ -3275,8 +3315,11 @@
     let hasAnyRequestFailed = false;        // 当前请求组中是否有失败
     let requestStatusTimeout = null;        // 用于3秒后恢复文字的定时器
     let hasShownFirstRequestFailure = false;// 首次请求失败提示是否已弹出
+    let dynamicIslandToastTimer = null;
+    let dynamicIslandToastMeasurer = null;
     let albumMouseMoveHandler = null;
     let albumMouseLeaveHandler = null;
+    let lyricsAnimationMode = 'visual';
     let kugouToken = localStorage.getItem('kugouToken') || '';
     let kugouUserId = localStorage.getItem('kugouUserId') || '';
 
@@ -3398,6 +3441,129 @@
       };
     }
 
+    function isPerformanceLyricsMode() {
+      return lyricsAnimationMode === 'performance';
+    }
+
+    function getLyricsItemTransition() {
+      if (isPerformanceLyricsMode()) {
+        return 'transform 0.18s ease-out, opacity 0.18s linear, color 0.18s linear';
+      }
+      return isMobile()
+        ? 'transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear'
+        : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
+    }
+
+    function applyLyricsItemTransitions() {
+      const items = amLyrics ? amLyrics.querySelectorAll('.item') : [];
+      items.forEach(item => {
+        item.style.transition = getLyricsItemTransition();
+      });
+    }
+
+    function refreshCurrentLyricsAnimation() {
+      if (!amLyricsData.length) return;
+      const currentTime = audioPlayer.currentTime || 0;
+      const previousLyric = lastLyric;
+      lastLyric = -1;
+      updateAMLyricsHighlight(currentTime);
+      if (lastLyric === -1) {
+        const fallbackIndex = previousLyric >= 0 ? previousLyric : 0;
+        lastLyric = previousLyric;
+        UpdateLyricsLayout(fallbackIndex, [fallbackIndex], amLyricsData, 0);
+      }
+    }
+
+    function applyLyricsAnimationMode(mode = 'visual', persist = true) {
+      lyricsAnimationMode = mode === 'performance' ? 'performance' : 'visual';
+      document.body.classList.toggle('lyrics-performance-mode', lyricsAnimationMode === 'performance');
+      document.body.classList.toggle('lyrics-visual-mode', lyricsAnimationMode !== 'performance');
+
+      document.querySelectorAll('input[name="lyricsAnimationMode"]').forEach(radio => {
+        radio.checked = radio.value === lyricsAnimationMode;
+      });
+
+      if (persist) {
+        localStorage.setItem(LYRICS_ANIMATION_MODE_KEY, lyricsAnimationMode);
+      }
+
+      applyLyricsItemTransitions();
+      refreshCurrentLyricsAnimation();
+    }
+
+
+    function getCollapsedIslandBaseWidth() {
+      return window.innerWidth <= 768 ? 160 : 180;
+    }
+
+    function ensureDynamicIslandToastMeasurer() {
+      if (dynamicIslandToastMeasurer) return dynamicIslandToastMeasurer;
+      dynamicIslandToastMeasurer = document.createElement('span');
+      dynamicIslandToastMeasurer.className = 'collapsed-text measure';
+      document.body.appendChild(dynamicIslandToastMeasurer);
+      return dynamicIslandToastMeasurer;
+    }
+
+    function setDynamicIslandCollapsedWidth(width) {
+      if (!dynamicIsland || dynamicIsland.classList.contains('expanded')) return;
+      const baseWidth = getCollapsedIslandBaseWidth();
+      const maxWidth = Math.min(window.innerWidth - 24, 720);
+      const finalWidth = Math.max(baseWidth, Math.min(Math.ceil(width), maxWidth));
+      dynamicIsland.style.setProperty('--dynamic-island-collapsed-width', `${finalWidth}px`);
+    }
+
+    function measureDynamicIslandCollapsedWidth(message) {
+      const measurer = ensureDynamicIslandToastMeasurer();
+      measurer.textContent = message || '';
+      return measurer.offsetWidth + 56;
+    }
+
+    function resetDynamicIslandCollapsedWidth(force = false) {
+      if (!dynamicIsland) return;
+      if (!force && dynamicIsland.classList.contains('expanded')) return;
+      dynamicIsland.style.setProperty('--dynamic-island-collapsed-width', `${getCollapsedIslandBaseWidth()}px`);
+    }
+
+    function refreshDynamicIslandToastLayout() {
+      if (!collapsedTextSpan || !collapsedTextSpan.dataset.toastActive) {
+        resetDynamicIslandCollapsedWidth();
+        return;
+      }
+
+      setDynamicIslandCollapsedWidth(measureDynamicIslandCollapsedWidth(collapsedTextSpan.textContent));
+    }
+
+    function hideDynamicIslandToast() {
+      if (dynamicIslandToastTimer) {
+        clearTimeout(dynamicIslandToastTimer);
+        dynamicIslandToastTimer = null;
+      }
+
+      if (collapsedTextSpan) {
+        delete collapsedTextSpan.dataset.toastActive;
+      }
+
+      resetDynamicIslandCollapsedWidth();
+      updateCollapsedTextByPlayingState();
+    }
+
+    function showDynamicIslandToast(message, duration = 3000) {
+      if (!collapsedTextSpan || !message) return;
+
+      if (dynamicIslandToastTimer) {
+        clearTimeout(dynamicIslandToastTimer);
+        dynamicIslandToastTimer = null;
+      }
+
+      updateCollapsedText(message);
+      collapsedTextSpan.dataset.toastActive = 'true';
+      setDynamicIslandCollapsedWidth(measureDynamicIslandCollapsedWidth(message));
+
+      dynamicIslandToastTimer = setTimeout(() => {
+        hideDynamicIslandToast();
+      }, duration);
+    }
+
     // 更新灵动岛折叠区域的文字
     function updateCollapsedText(text) {
         const collapsedTextSpan = document.querySelector('.collapsed-text');
@@ -3512,12 +3678,31 @@
     hasShownFirstRequestFailure = true;
 }
 
-    // 包装 fetch，自动处理请求开始/结束
     async function wrappedFetch(input, init) {
-        startRequest();
+        startRequest();  // 全局请求计数器（用于灵动岛状态显示）
+        let finalInit = init || {};
+        // 针对酷狗 API 强制添加 credentials 和 mode
+        if (typeof input === 'string' && input.includes('api-kugou')) {
+            finalInit.credentials = 'include';
+            finalInit.mode = 'cors';
+            // 确保 headers 存在
+            finalInit.headers = {
+                ...(finalInit.headers || {}),
+                'Accept': 'application/json',
+            };
+        }
         try {
-            const response = await fetch(input, init);
-            // 如果响应不成功（非2xx），也视为请求失败
+            const response = await fetch(input, finalInit);
+            // 检查酷狗 API 返回的业务错误码（如未登录）
+            if (input.includes('api-kugou')) {
+                const cloned = response.clone();
+                const data = await cloned.json().catch(() => null);
+                if (data && (data.status === 152 || data.code === 152 || (data.msg && data.msg.includes('未登录')))) {
+                    triggerKugouReLogin();  // 触发重新登录
+                    endRequest(false);
+                    throw new Error('酷狗凭证已失效，请重新登录');
+                }
+            }
             if (!response.ok) {
                 endRequest(false);
             } else {
@@ -3526,8 +3711,19 @@
             return response;
         } catch (error) {
             endRequest(false);
-            throw error; // 重新抛出，让调用者继续处理
+            throw error;
         }
+    }
+
+    function triggerKugouReLogin() {
+        localStorage.removeItem('kugouToken');
+        localStorage.removeItem('kugouUserId');
+        kugouToken = '';
+        kugouUserId = '';
+        showError('酷狗登录已失效，请重新登录', 5000);
+        settingsModalOverlay.classList.add('active');
+        const kugouTab = document.querySelector('.settings-tab[data-tab="kugou"]');
+        if (kugouTab) kugouTab.click();
     }
 
     // ===== 歌词切换功能 =====
@@ -3621,6 +3817,13 @@
 
       enableWordLyrics.checked = !!lyricsSettings.wordLyricsEnabled;
       neteaseProxyInput.value = lyricsSettings.neteaseProxy || '';
+      const savedSource = localStorage.getItem('wordLyricsSource') || 'netease';
+      const radios = document.querySelectorAll('input[name="wordLyricsSource"]');
+      radios.forEach(radio => {
+          if (radio.value === savedSource) {
+              radio.checked = true;
+          }
+      });
     }
 
     // 保存翻译设置
@@ -3643,7 +3846,7 @@
 
       localStorage.setItem('lyricsSettings', JSON.stringify(lyricsSettings));
 
-      showError('设置已保存', 1500);
+      showDynamicIslandToast('设置已保存', 3000);
     }
 
     // ===== 桌面歌词功能 =====
@@ -3769,7 +3972,13 @@
       if (isDynamicIslandExpanded) {
         dynamicIsland.classList.remove('expanded');
         isDynamicIslandExpanded = false;
+        if (collapsedTextSpan?.dataset.toastActive) {
+          refreshDynamicIslandToastLayout();
+        } else {
+          resetDynamicIslandCollapsedWidth();
+        }
       } else {
+        resetDynamicIslandCollapsedWidth(true);
         dynamicIsland.classList.add('expanded');
         isDynamicIslandExpanded = true;
         searchInput.focus();
@@ -3796,6 +4005,7 @@
 
     function expandDynamicIsland() {
         if (!dynamicIsland.classList.contains('expanded')) {
+            resetDynamicIslandCollapsedWidth(true);
             dynamicIsland.classList.add('expanded');
             isDynamicIslandExpanded = true;
             // 聚焦搜索框，提升用户体验
@@ -3820,6 +4030,7 @@
     function initPlaylist() {
       currentActivePlaylist = getActivePlaylistArray();
       renderPlaylist();
+      updatePlaylistOrder();
     }
 
     function getActivePlaylistArray() {
@@ -4355,6 +4566,7 @@
 
     function savePlaylist() {
       localStorage.setItem('musicPlaylist', JSON.stringify(playlist));
+      updatePlaylistOrder(); 
     }
 
     function saveFavorites() {
@@ -4729,13 +4941,7 @@
         rebuildLyricsMetrics(amLyricsData);
         UpdateLyricsLayout(0, [0], amLyricsData, 0);
         setTimeout(() => {
-          const items = amLyrics.querySelectorAll('.item');
-          const transitionStr = isMobile()
-            ? 'transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear'
-            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out, filter 0.5s ease-in-out';
-          items.forEach(item => {
-            item.style.transition = transitionStr;
-          });
+          applyLyricsItemTransitions();
         }, 50);
       });
 
@@ -5491,11 +5697,7 @@
         
         // 添加过渡效果
         setTimeout(() => {
-          const items = amLyrics.querySelectorAll('.item');
-          const transitionStr = 'all 0.7s cubic-bezier(.19,.11,0,1)';
-          items.forEach(item => {
-            item.style.transition = transitionStr;
-          });
+          applyLyricsItemTransitions();
         }, 50);
       });
 
@@ -5616,20 +5818,26 @@
         rebuildLyricsMetrics(data);
       }
 
+      const performanceMode = isPerformanceLyricsMode();
       const highlightSet = new Set(Array.isArray(highlightIndices) ? highlightIndices : [mainIndex]);
 
       for (let i = 0; i < data.length; i++) {
         if (!data[i] || !data[i].ele) continue;
 
+        const ele = data[i].ele;
         const isHighlight = highlightSet.has(i);
-        data[i].ele.style.color = isHighlight ? "rgba(255,255,255,1)" : "rgba(255,255,255,0.2)";
-        data[i].ele.style.filter = `blur(${Math.abs(i - mainIndex)}px)`;
+        const distance = Math.abs(i - mainIndex);
+
+        ele.classList.toggle('highlight', isHighlight);
+        ele.style.color = isHighlight ? "rgba(255,255,255,1)" : (performanceMode ? "rgba(255,255,255,0.32)" : "rgba(255,255,255,0.2)");
+        ele.style.opacity = performanceMode ? String(Math.max(isHighlight ? 1 : 0.24, 0.92 - distance * 0.14)) : '1';
+        ele.style.filter = performanceMode ? 'none' : `blur(${distance}px)`;
 
         const position = GetLyricsLayout(mainIndex, i, data);
 
         let n = (i - mainIndex) + 1;
         if (n > 10) n = 0;
-        const baseDelay = isMobile() ? 20 : 60;  // 移动端每行 20ms，桌面端 60ms
+        const baseDelay = performanceMode ? 0 : (isMobile() ? 20 : 60);
         const delay = (n * baseDelay) * (init ? 1 : 0);
 
         setTimeout(() => {
@@ -5785,6 +5993,7 @@
     // 保存设置
     saveSettingsBtn.addEventListener('click', () => {
       saveTranslationSettings();
+      saveVisualSettings();
     });
 
     // 测试API连接
@@ -6532,26 +6741,29 @@
     }
 
     function getNextSongId(currentId) {
-      if (!currentId || playlistOrder.length === 0) return null;
-      
-      const currentIndex = playlistOrder.indexOf(currentId);
-      if (currentIndex === -1) return null;
-      
-      if (currentPlayMode === 'repeat') {
-        // 单曲循环，返回当前歌曲ID
-        return currentId;
-      } else if (currentPlayMode === 'shuffle') {
-        // 随机播放，随机选择一首
-        const randomIndex = Math.floor(Math.random() * playlistOrder.length);
-        return playlistOrder[randomIndex];
-      } else {
-        // 正常播放，播放下一首
-        let nextIndex = currentIndex + 1;
-        if (nextIndex >= playlistOrder.length) {
-          nextIndex = 0; // 循环到第一首
+        // 播放列表为空 → 无下一首
+        if (playlist.length === 0) return null;
+        if (!currentId) return null;
+
+        // 若顺序数组长度不一致，自动重建
+        if (playlistOrder.length !== playlist.length) {
+            updatePlaylistOrder();
         }
-        return playlistOrder[nextIndex];
-      }
+        if (playlistOrder.length === 0) return null;
+
+        const currentIndex = playlistOrder.indexOf(currentId);
+        if (currentIndex === -1) return null;
+
+        if (currentPlayMode === 'repeat') {
+            return currentId;
+        } else if (currentPlayMode === 'shuffle') {
+            const randomIndex = Math.floor(Math.random() * playlistOrder.length);
+            return playlistOrder[randomIndex];
+        } else {
+            let nextIndex = currentIndex + 1;
+            if (nextIndex >= playlistOrder.length) nextIndex = 0;
+            return playlistOrder[nextIndex];
+        }
     }
 
     function getPrevSongId(currentId) {
@@ -6589,12 +6801,18 @@
         if (toggle) {
             toggle.checked = isEnabled;
         }
+
+        const savedLyricsAnimationMode = localStorage.getItem(LYRICS_ANIMATION_MODE_KEY) || 'visual';
+        applyLyricsAnimationMode(savedLyricsAnimationMode, false);
     }
 
     function saveVisualSettings() {
         const toggle = document.getElementById('albumEffectToggle');
         const isEnabled = toggle ? toggle.checked : false;
         localStorage.setItem(ALBUM_KEY, isEnabled);
+
+        const selectedMode = document.querySelector('input[name="lyricsAnimationMode"]:checked')?.value || 'visual';
+        applyLyricsAnimationMode(selectedMode);
         applyEffectListener();
     }
 
@@ -6617,6 +6835,17 @@
             });
         }
 
+        document.querySelectorAll('input[name="lyricsAnimationMode"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                if (!e.target.checked) return;
+                applyLyricsAnimationMode(e.target.value);
+                showDynamicIslandToast(
+                  e.target.value === 'performance' ? '已切换为性能优先歌词动画' : '已切换为视觉优先歌词动画',
+                  2200
+                );
+            });
+        });
+
         if (isMobile()) {
             desktopLyricsBtn.style.display = 'none';
             if (!lyricsVisible) {
@@ -6632,6 +6861,23 @@
 
         LYRICS_OFFSET = calculateLyricsOffset();
         initSidebarControls();
+
+        function initWordLyricsSource() {
+            const savedSource = localStorage.getItem('wordLyricsSource') || 'netease';
+            const radios = document.querySelectorAll('input[name="wordLyricsSource"]');
+            radios.forEach(radio => {
+                if (radio.value === savedSource) {
+                    radio.checked = true;
+                }
+                radio.addEventListener('change', (e) => {
+                    if (e.target.checked) {
+                        localStorage.setItem('wordLyricsSource', e.target.value);
+                        console.log('逐字歌词来源已保存:', e.target.value);
+                    }
+                });
+            });
+        }
+        initWordLyricsSource();
 
         // ---------- 设置选项卡切换 ----------
         document.querySelectorAll('.settings-tab').forEach(tab => {
@@ -6656,6 +6902,7 @@
                 document.body.classList.remove('mobile-lyrics-fullscreen');
                 isMobileLyricsFullscreen = false;
             }
+            refreshDynamicIslandToastLayout();
         }, 200));
 
         updateCollapsedText('Harmonia');
@@ -6989,63 +7236,63 @@
 
     // 发送验证码（不加 token）
     async function sendKugouCaptcha(mobile) {
-      const url = `${KUGOU_API_BASE}/captcha/sent?mobile=${encodeURIComponent(mobile)}`;
-      const res = await wrappedFetch(url);
-      if (!res.ok) throw new Error('发送验证码失败');
-      const data = await res.json();
-      if (data.status !== 1) throw new Error(data.msg || '发送失败');
-      return data;
+        const url = `${KUGOU_API_BASE}/captcha/sent?mobile=${encodeURIComponent(mobile)}`;
+        const res = await wrappedFetch(url);
+        if (!res.ok) throw new Error('发送验证码失败');
+        const data = await res.json();
+        if (data.status !== 1) throw new Error(data.msg || '发送失败');
+        return data;
     }
 
     // 登录（不加 token）
     async function loginKugou(mobile, code) {
-      const url = `${KUGOU_API_BASE}/login/cellphone?mobile=${encodeURIComponent(mobile)}&code=${encodeURIComponent(code)}`;
-      const res = await wrappedFetch(url);
-      if (!res.ok) throw new Error('登录请求失败');
-      const data = await res.json();
-      if (data.status !== 1) throw new Error(data.msg || '登录失败');
-      const token = data.data.token;
-      const userid = data.data.userid;
-      localStorage.setItem('kugouToken', token);
-      localStorage.setItem('kugouUserId', userid);
-      kugouToken = token;
-      kugouUserId = userid;
-      return data;
+        const url = `${KUGOU_API_BASE}/login/cellphone?mobile=${encodeURIComponent(mobile)}&code=${encodeURIComponent(code)}`;
+        const res = await wrappedFetch(url);
+        if (!res.ok) throw new Error('登录请求失败');
+        const data = await res.json();
+        if (data.status !== 1) throw new Error(data.msg || '登录失败');
+        const token = data.data.token;
+        const userid = data.data.userid;
+        localStorage.setItem('kugouToken', token);
+        localStorage.setItem('kugouUserId', userid);
+        kugouToken = token;
+        kugouUserId = userid;
+        return data;
     }
 
     // 搜索歌曲（带 token + credentials）
     async function searchKugouSong(keyword) {
-      if (!kugouToken) throw new Error('请先登录酷狗账号');
-      const url = `${KUGOU_API_BASE}/search?keywords=${encodeURIComponent(keyword)}&page=1&pagesize=1&token=${kugouToken}`;
-      const res = await wrappedFetch(url, { credentials: 'include' });
-      if (!res.ok) throw new Error('搜索失败');
-      const data = await res.json();
-      if (data.status !== 1 || !data.data.lists.length) throw new Error('未找到歌曲');
-      const song = data.data.lists[0];
-      return song.FileHash;
+        if (!kugouToken) throw new Error('请先登录酷狗账号');
+        const url = `${KUGOU_API_BASE}/search?keywords=${encodeURIComponent(keyword)}&page=1&pagesize=1&token=${kugouToken}`;
+        const res = await wrappedFetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('搜索失败');
+        const data = await res.json();
+        if (data.status !== 1 || !data.data.lists.length) throw new Error('未找到歌曲');
+        const song = data.data.lists[0];
+        return song.FileHash;
     }
 
     // 获取歌词信息（带 token + credentials）
     async function getKugouLyricInfo(hash) {
-      if (!kugouToken) throw new Error('请先登录酷狗账号');
-      const url = `${KUGOU_API_BASE}/search/lyric?hash=${hash}&token=${kugouToken}`;
-      const res = await wrappedFetch(url, { credentials: 'include' });
-      if (!res.ok) throw new Error('获取歌词信息失败');
-      const data = await res.json();
-      if (data.status !== 200 || !data.candidates.length) throw new Error('未找到官方歌词');
-      const official = data.candidates.find(c => c.product_from === '官方推荐歌词') || data.candidates[0];
-      return { id: official.id, accesskey: official.accesskey };
+        if (!kugouToken) throw new Error('请先登录酷狗账号');
+        const url = `${KUGOU_API_BASE}/search/lyric?hash=${hash}&token=${kugouToken}`;
+        const res = await wrappedFetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('获取歌词信息失败');
+        const data = await res.json();
+        if (data.status !== 200 || !data.candidates.length) throw new Error('未找到官方歌词');
+        const official = data.candidates.find(c => c.product_from === '官方推荐歌词') || data.candidates[0];
+        return { id: official.id, accesskey: official.accesskey };
     }
 
     // 获取逐字歌词内容（带 token + credentials）
     async function fetchKugouLyricContent(id, accesskey) {
-      if (!kugouToken) throw new Error('请先登录酷狗账号');
-      const url = `${KUGOU_API_BASE}/lyric?id=${id}&accesskey=${accesskey}&decode=true&token=${kugouToken}`;
-      const res = await wrappedFetch(url, { credentials: 'include' });
-      if (!res.ok) throw new Error('获取歌词内容失败');
-      const data = await res.json();
-      if (data.status !== 200) throw new Error(data.info || '获取失败');
-      return data.decodeContent;
+        if (!kugouToken) throw new Error('请先登录酷狗账号');
+        const url = `${KUGOU_API_BASE}/lyric?id=${id}&accesskey=${accesskey}&decode=true&token=${kugouToken}`;
+        const res = await wrappedFetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('获取歌词内容失败');
+        const data = await res.json();
+        if (data.status !== 200) throw new Error(data.info || '获取失败');
+        return data.decodeContent;
     }
 
     function parseKugouKrc(krcText) {
@@ -7177,11 +7424,7 @@
         rebuildLyricsMetrics(amLyricsData);
         UpdateLyricsLayout(0, [0], amLyricsData, 0);
         setTimeout(() => {
-          const items = amLyrics.querySelectorAll('.item');
-          const transitionStr = isMobile()
-            ? 'transform 0.28s cubic-bezier(.2,.7,0,1), color 0.18s linear'
-            : 'transform 0.7s cubic-bezier(.19,.11,0,1), color 0.5s ease-in-out';
-          items.forEach(item => { item.style.transition = transitionStr; });
+          applyLyricsItemTransitions();
         }, 50);
       });
     }
@@ -7230,6 +7473,63 @@
     const loginBtn = document.getElementById('kugouLoginBtn');
     const kugouMobileInput = document.getElementById('kugouMobile');
     const kugouCaptchaInput = document.getElementById('kugouCaptcha');
+    const KUGOU_CAPTCHA_COOLDOWN_SECONDS = 120;
+    const KUGOU_CAPTCHA_COOLDOWN_KEY = 'kugouCaptchaCooldownUntil';
+    let kugouCaptchaCountdownTimer = null;
+
+    function clearKugouCaptchaCountdown() {
+      if (kugouCaptchaCountdownTimer) {
+        clearInterval(kugouCaptchaCountdownTimer);
+        kugouCaptchaCountdownTimer = null;
+      }
+    }
+
+    function resetKugouCaptchaButton() {
+      clearKugouCaptchaCountdown();
+      localStorage.removeItem(KUGOU_CAPTCHA_COOLDOWN_KEY);
+      if (getCaptchaBtn) {
+        getCaptchaBtn.disabled = false;
+        getCaptchaBtn.textContent = '获取验证码';
+      }
+    }
+
+    function startKugouCaptchaCooldown(seconds = KUGOU_CAPTCHA_COOLDOWN_SECONDS) {
+      if (!getCaptchaBtn) return;
+
+      const endTime = Date.now() + seconds * 1000;
+      localStorage.setItem(KUGOU_CAPTCHA_COOLDOWN_KEY, String(endTime));
+      clearKugouCaptchaCountdown();
+
+      const updateCountdown = () => {
+        const remainingMs = endTime - Date.now();
+        const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+        if (remainingSeconds <= 0) {
+          resetKugouCaptchaButton();
+          return;
+        }
+
+        getCaptchaBtn.disabled = true;
+        getCaptchaBtn.textContent = `${remainingSeconds}s后可重新获取`;
+      };
+
+      updateCountdown();
+      kugouCaptchaCountdownTimer = setInterval(updateCountdown, 1000);
+    }
+
+    function restoreKugouCaptchaCooldown() {
+      const storedEndTime = parseInt(localStorage.getItem(KUGOU_CAPTCHA_COOLDOWN_KEY) || '', 10);
+      if (!storedEndTime || Number.isNaN(storedEndTime)) return;
+
+      const remainingSeconds = Math.ceil((storedEndTime - Date.now()) / 1000);
+      if (remainingSeconds > 0) {
+        startKugouCaptchaCooldown(remainingSeconds);
+      } else {
+        resetKugouCaptchaButton();
+      }
+    }
+
+    restoreKugouCaptchaCooldown();
 
     if (getCaptchaBtn) {
       getCaptchaBtn.addEventListener('click', async () => {
@@ -7238,16 +7538,24 @@
           showError('请输入有效手机号', 2000);
           return;
         }
+
+        const storedEndTime = parseInt(localStorage.getItem(KUGOU_CAPTCHA_COOLDOWN_KEY) || '', 10);
+        if (storedEndTime && storedEndTime > Date.now()) {
+          const remainingSeconds = Math.ceil((storedEndTime - Date.now()) / 1000);
+          showError(`请在 ${remainingSeconds}s 后再试`, 2000);
+          startKugouCaptchaCooldown(remainingSeconds);
+          return;
+        }
+
         try {
           getCaptchaBtn.disabled = true;
           getCaptchaBtn.textContent = '发送中...';
           await sendKugouCaptcha(mobile);
           showError('验证码已发送', 2000);
+          startKugouCaptchaCooldown();
         } catch (err) {
+          resetKugouCaptchaButton();
           showError(`发送失败: ${err.message}`, 3000);
-        } finally {
-          getCaptchaBtn.disabled = false;
-          getCaptchaBtn.textContent = '获取验证码';
         }
       });
     }
@@ -7264,7 +7572,7 @@
           loginBtn.disabled = true;
           loginBtn.textContent = '登录中...';
           await loginKugou(mobile, code);
-          showError('登录成功！', 1500);
+          showDynamicIslandToast('登陆成功，可开始使用酷狗音乐逐字歌词。', 3000);
         } catch (err) {
           showError(`登录失败: ${err.message}`, 3000);
         } finally {
@@ -7274,16 +7582,21 @@
       });
     }
     async function fetchKugouLyricsOnly(songName, artistName) {
-      if (!kugouToken) throw new Error('请先登录酷狗账号');
-      const keyword = `${songName} ${artistName}`;
-      const hash = await searchKugouSong(keyword);
-      const { id, accesskey } = await getKugouLyricInfo(hash);
-      const krcContent = await fetchKugouLyricContent(id, accesskey);
-      const wordLines = parseKugouKrc(krcContent);
-      if (!wordLines.length) throw new Error('未解析到逐字歌词');
-      return wordLines;
+        if (!kugouToken) {
+            triggerKugouReLogin();
+            throw new Error('请先登录酷狗账号');
+        }
+        const keyword = `${songName} ${artistName}`;
+        const hash = await searchKugouSong(keyword);
+        const { id, accesskey } = await getKugouLyricInfo(hash);
+        const krcContent = await fetchKugouLyricContent(id, accesskey);
+        const wordLines = parseKugouKrc(krcContent);  // 解析 KRC 格式
+        if (!wordLines.length) throw new Error('未解析到逐字歌词');
+        return wordLines;
     }
   </script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"6f31cbf20cdb47d59ccf304e1a1fea69","r":1,"server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
-</body>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+<script src="/Static/js/jquery.js"></script><script src="/Static/js/Global.js"></script><script src="/Web/js/Global.js"></script><script src="/Web/js/XYChatGPT.js"></script><script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+<script src="/Static/js/jquery.js"></script><script src="/Static/js/Global.js"></script><script src="/Web/js/Global.js"></script><script src="/Web/js/XYChatGPT.js"></script></body>
 </html>
