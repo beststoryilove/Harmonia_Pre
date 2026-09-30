@@ -278,12 +278,106 @@
     };
   }
 
+  // ── AMLL 解析适配纯函数（AMLL-1）──
+  //
+  // 用途：把 @applemusic-like-lyrics/lyric 官方 parser 的输出适配到本工程内部的数据形态。
+  // 抽到 pure.js 的原因与 H7 一致：这些映射不依赖 DOM，可被 node --test 直接覆盖，
+  // 而 main.js 中的同名函数是委托封装（浏览器侧需保持单文件全局作用域）。
+  //
+  // 注意：本文件与 Harmonia/js/lib/pure.js 保持同源，两份改动需同步。
+
+  var CJK_RE = /[\u4e00-\u9FFF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF]/;
+
+  // 行文本拼接口径（与 main.js lineTextFromAMLL 一致）：
+  //  - TTML 来源按原样拼接（TTML 空格敏感，词内已带空格）；
+  //  - 其他来源若含 CJK 则直接拼接，否则用空格连接（拉丁文按词切开后需要还原词间空格）。
+  function joinWordTexts(words, fromTtml) {
+    var list = (Array.isArray(words) ? words : []).map(function (w) {
+      return String((w && (w.word !== undefined ? w.word : w.text)) || '');
+    });
+    if (!list.length) return '';
+    if (fromTtml) return list.join('');
+    if (list.length === 1) return list[0];
+    return CJK_RE.test(list.join('')) ? list.join('') : list.join(' ');
+  }
+
+  // 官方 AMLL 行 → 工程既有「逐字歌词行」形状（time/end 为秒，words[].{start,end,text}）。
+  // 工程内部同时存在逐字行与 AMLL 行两种形态，此函数用于让官方 parser 的输出
+  // 能被下游既有逻辑（署名过滤、翻译对齐、legacyWordLinesToAMLLLines）直接消费。
+  function amllLinesToLegacyWordLines(lines) {
+    return (Array.isArray(lines) ? lines : []).map(function (line) {
+      var words = (Array.isArray(line && line.words) ? line.words : [])
+        .map(function (w) {
+          return {
+            start: Number(w.startTime) / 1000,
+            end: Number(w.endTime) / 1000,
+            text: String((w.word !== undefined ? w.word : w.text) || '')
+          };
+        })
+        .filter(function (w) { return w.text.length > 0; });
+      var startSec = Number(line && line.startTime) / 1000;
+      return {
+        time: isFinite(startSec) ? startSec : 0,
+        end: Number(line && line.endTime) / 1000,
+        words: words,
+        text: words.length ? words.map(function (w) { return w.text; }).join('') : '',
+        translation: (line && line.translatedLyric) || '',
+        romanLyric: (line && line.romanLyric) || '',
+        // 官方 parseYrc / parseQrc 会把「整行被圆括号包裹」的行识别为背景人声并去掉括号，
+        // 该信息必须透传，否则下游无法区分背景句与正文句。
+        isBG: !!(line && line.isBG),
+        isDuet: !!(line && line.isDuet)
+      };
+    });
+  }
+
+  // 官方 parseTTML 输出 → 工程内部行模型。
+  // 官方（内部委托 ttml 包的 toAmllLyrics）形状已与本工程高度一致，差异仅三点：
+  //  1) 词尾空格用 endsWithSpace 布尔字段表达，而非直接写进 word —— 需还原成尾随空格，
+  //     否则英文歌词会连成一片；
+  //  2) 无 _fromTtml 标记 —— 该标记控制拉丁空格兜底与文本拼接口径；
+  //  3) 官方无 agent 字段（isDuet 已按 ttm:agent 交替自行推导），故 agent 留空。
+  // 另原样保留 word 上的 ruby / obscene / emptyBeat / romanWord：
+  //  - obscene 为布尔（amll:obscene="true"）；
+  //  - emptyBeat 为**数值**（amll:empty-beat="2"，解析侧用 parseInt，
+  //    故 "true" 会得到 NaN 而被官方丢弃；此处按数值原样透传，不做布尔化，
+  //    否则会把 2 变成 true，丢失空拍节拍数）；
+  //  - ruby 为 [{startTime,endTime,word}] 注音分段。
+  function adaptAmllTtmlLines(parsed) {
+    var parsedLines = (parsed && (parsed.lines || parsed.lyricLines)) || [];
+    return parsedLines.map(function (line) {
+      var words = (Array.isArray(line && line.words) ? line.words : []).map(function (w) {
+        var base = {
+          startTime: w.startTime,
+          endTime: w.endTime,
+          word: String((w.word !== undefined ? w.word : w.text) || '') + (w.endsWithSpace ? ' ' : '')
+        };
+        if (Array.isArray(w.ruby) && w.ruby.length) base.ruby = w.ruby;
+        if (w.obscene !== undefined) base.obscene = !!w.obscene;
+        if (w.emptyBeat !== undefined) base.emptyBeat = w.emptyBeat;
+        if (w.romanWord) base.romanWord = w.romanWord;
+        return base;
+      });
+      var out = {};
+      for (var k in line) if (Object.prototype.hasOwnProperty.call(line, k)) out[k] = line[k];
+      out.words = words;
+      out.isBG = !!line.isBG;
+      out.isDuet = !!line.isDuet;
+      out.agent = line.agent || '';
+      out._fromTtml = true;
+      return out;
+    });
+  }
+
   return {
     escapeHtml: escapeHtml,
     formatTime: formatTime,
     normalizeMusicSource: normalizeMusicSource,
     normalizeTrack: normalizeTrack,
     parseLyrics: parseLyrics,
+    joinWordTexts: joinWordTexts,
+    amllLinesToLegacyWordLines: amllLinesToLegacyWordLines,
+    adaptAmllTtmlLines: adaptAmllTtmlLines,
     buildStFetchUrl: buildStFetchUrl,
     isProxyRangeProbeOk: isProxyRangeProbeOk,
     measureLoudnessDbfs: measureLoudnessDbfs,

@@ -132,8 +132,18 @@ const amBackground = document.querySelector('.am-background');
 const amLyrics = document.getElementById('amLyrics');
 const amllStatus = document.getElementById('amllStatus');
 const lyricsRendererModeRadios = document.querySelectorAll('input[name="lyricsRendererMode"]');
-const AMLL_CORE_ESM_URL = 'https://esm.sh/@applemusic-like-lyrics/core@0.5.1?bundle';
-const AMLL_LYRIC_ESM_URL = 'https://esm.sh/@applemusic-like-lyrics/lyric@1.0.1?bundle';
+/* AMLL 引擎：优先使用仓库内 vendor bundle（tools/amll-build 构建，自包含、无外部依赖）。
+   CDN 仅作兜底——实测 jsdelivr 在部分网络下不可达，故兜底列表以 esm.sh 为主。
+   版本必须与 tools/amll-build/package.json 保持一致：core 0.6.0 / lyric 1.1.0。
+   ★ 路径必须以 ./ 开头：动态 import 的说明符若不以 ./ / ../ / 协议开头，
+     会被当作裸模块说明符交给模块解析器（浏览器无 import map 时直接抛
+     "Failed to resolve module specifier"，从而静默落入 CDN 兜底）。
+   ★ core 0.5.1 → 0.6.0 为破坏性升级：calcLayout 由 (force, immediate) 两个布尔参数
+     改为单个 LayoutReason 值。相关调用点见 amllSetLyricLinesNoBurst / attemptLoad。 */
+const AMLL_VENDOR_CORE_URL = './js/vendor/amll-core.bundle.mjs';
+const AMLL_VENDOR_LYRIC_URL = './js/vendor/amll-lyric.bundle.mjs';
+const AMLL_CORE_ESM_URL = 'https://esm.sh/@applemusic-like-lyrics/core@0.6.0?bundle';
+const AMLL_LYRIC_ESM_URL = 'https://esm.sh/@applemusic-like-lyrics/lyric@1.1.0?bundle';
 const AMLL_TTML_DB_MIRROR = 'https://amlldb.bikonoo.com/ncm-lyrics/';
 const AMLL_TTML_DB_GITHUB = 'https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics/';
 const AMLL_TTML_SOURCE_KEY = 'amllTtmlSource';
@@ -471,6 +481,13 @@ const TRACK_TRANSITION_KEY = 'trackTransitionEnabled';
 const CROSSFADE_ENABLED_KEY = 'crossfadeEnabled';
 const SMART_TRANSITION_KEY = 'smartTransitionEnabled';
 const SMART_TRANSITION_MIX_KEY = 'stMixDuration';
+/* AMLL 动态背景（视觉设置）：开关 + 流动速度（0.2×–3.0×）。
+   实际渲染由 js/dynamic-bg.js 承担，本文件只负责持久化与事件桥接。 */
+const DYNAMIC_BG_ENABLED_KEY = 'dynamicBgEnabled';
+const DYNAMIC_BG_SPEED_KEY = 'dynamicBgSpeed';
+const DYNAMIC_BG_SPEED_MIN = 0.2;
+const DYNAMIC_BG_SPEED_MAX = 3;
+const DYNAMIC_BG_SPEED_DEFAULT = 1;
 /* 智能过渡参数常量：声明于顶部，避免文件后部的 st 模块 const 在设置加载阶段处于 TDZ */
 const ST_MIX_MIN = 1;             // overlap 时长下限（秒，同 Apple Music）
 const ST_MIX_MAX = 12;            // overlap 时长上限
@@ -4731,9 +4748,33 @@ amllPlayer.update?.(0);
 console.warn('[AMLL] 停用播放器失败:', error);
 }
 }
+/* 页面卸载时的 AMLL 资源清理。
+ * 文档「时序与生命周期 · 清理」检查清单要求：不再需要歌词组件时，
+ * 取消自己创建的 requestAnimationFrame 并释放组件（dispose 会移除元素与内部监听）。
+ * 只在首次创建播放器时注册，避免重复叠加监听。 */
+let amllUnloadCleanupRegistered = false;
+function registerAMLLUnloadCleanup() {
+if (amllUnloadCleanupRegistered) return;
+amllUnloadCleanupRegistered = true;
+window.addEventListener('pagehide', (event) => {
+amllActive = false;
+if (amllFrameRAF) {
+cancelAnimationFrame(amllFrameRAF);
+amllFrameRAF = 0;
+}
+try { amllPlayer?.dispose?.(); } catch (error) { console.warn('[AMLL] 卸载清理失败:', error); }
+amllPlayer = null;
+/* 文档「清理」检查清单：宿主自行创建的资源也要在此释放（动态背景渲染器）。
+   走 onPageHide 而非 dispose：它会把 bfcache 冻结（persisted=true）与真正卸载区分开，
+   否则用户后退返回页面时背景会永久消失。 */
+try { window.HarmoniaDynamicBg?.onPageHide?.(event); } catch (error) { console.warn('[DynamicBg] 卸载清理失败:', error); }
+}, { once: true });
+}
 async function ensureAMLLPlayer() {
 if (amllPlayer) {
 const existingElement = getAMLLPlayerElement(amllPlayer);
+/* 元素被外部清空（如 amLyrics.innerHTML = ''）后重新挂载。
+   行元素是播放器元素的子节点，随父节点一起摘除／恢复，内部状态不受影响，无需重建视图。 */
 if (existingElement && !amLyrics.contains(existingElement)) {
 amLyrics.innerHTML = '';
 amLyrics.classList.add('amll-player-host');
@@ -4742,23 +4783,51 @@ amLyrics.appendChild(existingElement);
 return amllPlayer;
 }
 if (amllPlayerReadyPromise) return amllPlayerReadyPromise;
-const AMLL_CORE_FALLBACK_URL = 'https://cdn.jsdelivr.net/npm/@applemusic-like-lyrics/core@0.5.1/+esm';
-const AMLL_LYRIC_FALLBACK_URL = 'https://cdn.jsdelivr.net/npm/@applemusic-like-lyrics/lyric@1.0.1/+esm';
-const attemptLoad = async (useFallback) => {
+/* 模块加载：本地 vendor 优先，CDN 兜底。
+ *
+ * 两处易错点，均以实测复现后修正：
+ *  1) 相对说明符必须显式解析成绝对 URL。动态 import 的相对说明符是相对于
+ *     「发起 import 的模块」而非页面解析的——main.js 位于 /js/ 下，
+ *     直接 import('./js/vendor/x.mjs') 会被解析成 /js/js/vendor/x.mjs。
+ *     这里统一用 document.baseURI 归一。
+ *  2) file:// 页面下 Chromium 的模块 CORS 规则会拒绝动态 import 本地 ESM，
+ *     故该协议下改走 fetch → Blob URL → import（vendor 产物自包含，无内部相对依赖）。 */
+async function importAmllModule(url) {
+const isAbsolute = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(url) || /^(?:data|blob):/i.test(url);
+const resolved = isAbsolute ? url : new URL(url, document.baseURI).href;
+if (!resolved.startsWith('file:')) return import(resolved);
+const res = await fetch(resolved);
+if (!res.ok) throw new Error('AMLL 本地模块加载失败: HTTP ' + res.status);
+const text = await res.text();
+return import(URL.createObjectURL(new Blob([text], { type: 'text/javascript' })));
+}
+/* 候选来源按优先级排列：本地 vendor → esm.sh → esm.sh 重试。
+   原实现第三个候选是 jsdelivr，但实测该 CDN 在部分网络下已不可达，改用 esm.sh 重试。 */
+const AMLL_MODULE_CANDIDATES = [
+{ core: AMLL_VENDOR_CORE_URL, lyric: AMLL_VENDOR_LYRIC_URL, label: '本地 vendor' },
+{ core: AMLL_CORE_ESM_URL, lyric: AMLL_LYRIC_ESM_URL, label: 'esm.sh' },
+{ core: AMLL_CORE_ESM_URL, lyric: AMLL_LYRIC_ESM_URL, label: 'esm.sh 重试' },
+];
+const attemptLoad = async (source) => {
 setAMLLStatus('正在加载 AMLL 歌词引擎…', 'loading');
-const coreUrl = useFallback ? AMLL_CORE_FALLBACK_URL : AMLL_CORE_ESM_URL;
-const lyricUrl = useFallback ? AMLL_LYRIC_FALLBACK_URL : AMLL_LYRIC_ESM_URL;
 const [coreModule, lyricModule] = await Promise.all([
-import(coreUrl),
-import(lyricUrl)
+importAmllModule(source.core),
+importAmllModule(source.lyric)
 ]);
 amllCoreModule = coreModule;
 amllLyricModule = lyricModule;
+if (window.HarmoniaDynamicBg) {
+  /* 引擎刚就绪：若动态背景开关已开启且此前启用失败（模块加载竞态），补一次启用 */
+  try { window.HarmoniaDynamicBg.bootstrap(); } catch (_) {}
+}
 const LyricPlayerCtor = coreModule.LyricPlayer || coreModule.DomLyricPlayer;
 if (!LyricPlayerCtor) throw new Error('AMLL Core 未导出 LyricPlayer');
 amLyrics.innerHTML = '';
 amLyrics.classList.add('amll-player-host');
 const player = new LyricPlayerCtor();
+/* 文档「时序与生命周期 · 初始化」推荐：优先用 updateLyricProcessConfig 批量下发，
+   避免 setOptimizeOptions / 掩码设置各自触发一次视图重建（构建期无歌词，此调用不重建）。 */
+applyAMLLProcessConfig(player);
 const playerElement = player.getElement();
 playerElement.classList.add('harmonia-amll-player');
 amLyrics.appendChild(playerElement);
@@ -4771,6 +4840,9 @@ player.setCurrentTime(lineObject.startTime, true);
 });
 }
 amllPlayer = player;
+/* 文档「时序与生命周期 · 清理」要求宿主自行清理自己创建的资源；
+   core 0.6.0 的 dispose() 会 abort 内部 AbortController、移除元素并释放全部行组。 */
+registerAMLLUnloadCleanup();
 if (audioPlayer.paused || audioPlayer.ended) {
 pauseAMLLPlayer();
 } else {
@@ -4781,17 +4853,18 @@ setAMLLStatus('', 'hidden');
 return player;
 };
 let lastErr = null;
-for (let i = 0; i < 3; i++) {
+for (let i = 0; i < AMLL_MODULE_CANDIDATES.length; i++) {
 try {
 if (i > 0) await new Promise(r => setTimeout(r, i * 1000));
-amllPlayerReadyPromise = attemptLoad(i === 2); // 第三次尝试用备用 CDN
+const source = AMLL_MODULE_CANDIDATES[i];
+amllPlayerReadyPromise = attemptLoad(source);
 const player = await amllPlayerReadyPromise;
 amllPlayerReadyPromise = null;
 return player;
 } catch (err) {
 lastErr = err;
 amllPlayerReadyPromise = null;
-console.warn(`[AMLL] 加载失败 (第${i+1}次):`, err);
+console.warn(`[AMLL] 加载失败 (第${i+1}次 · ${AMLL_MODULE_CANDIDATES[i].label}):`, err);
 }
 }
 setAMLLStatus('AMLL 歌词引擎加载失败，已使用兼容渲染。', 'error');
@@ -4803,43 +4876,130 @@ const num = Number(value);
 if (!Number.isFinite(num)) return fallback;
 return Math.max(0, Math.round(num * 1000));
 }
-// AMLL 每帧对每行无条件执行 renderStyles（transform/opacity/filter 等 DOM 写入），
-// 行数多时（700+ 行艺术歌词）每帧数千次写入拖垮与 PiP 共享的主线程（实测 761 行 ~10fps）。
-// 补丁：样式输入值未变化时跳过整个写入体 —— 每帧真正变化的只有视口附近十几行，其余行零开销。
-// 纯样式写入无副作用（已核对库源码），行级动画/滚动/高亮行为不受影响。
-function patchAMLLRenderStyles(player) {
-if (!player || !Array.isArray(player.currentLyricGroups)) return;
-for (const group of player.currentLyricGroups) {
-if (!group || group.__renderStylesPatched) continue;
-group.__renderStylesPatched = true;
-const orig = group.renderStyles.bind(group);
-let lastKey = null;
-group.renderStyles = function () {
-const key = this.posY.getCurrentPosition().toFixed(1) + '|' + this.opacity + '|' +
-Math.min(5, this.blur) + '|' + (this.bgSlideY ? this.bgSlideY.getCurrentPosition().toFixed(1) : '') +
-'|' + (this.isActive ? 1 : 0) + '|' + (this.isBgFirst ? 1 : 0);
-if (key === lastKey) return;
-lastKey = key;
-orig();
-};
+/* 速度读取：非法值/越界一律钳制到 [0.2, 3]，避免历史脏数据把背景冻住或抖成噪声 */
+function clampDynamicBgSpeed(value) {
+const num = parseFloat(value);
+if (!Number.isFinite(num)) return DYNAMIC_BG_SPEED_DEFAULT;
+return Math.min(DYNAMIC_BG_SPEED_MAX, Math.max(DYNAMIC_BG_SPEED_MIN, num));
 }
+function readDynamicBgSpeed() {
+const raw = localStorage.getItem(DYNAMIC_BG_SPEED_KEY);
+if (raw === null) return DYNAMIC_BG_SPEED_DEFAULT;
+return clampDynamicBgSpeed(raw);
 }
-// AMLL setLyricLines 内部首次 update(0) 会对全部行同步构建 DOM。两个触发点：
-// 1) 容器尺寸未就绪（size=[0,0]）时 isInSight 对全部行成立 → 全量 rebuildElement（761 行实测 3.6s）；
-// 2) 全部行 built 后每帧 applyAlphaToDom 对每行做 DOM 操作（~50ms/帧）。
-// 绕过（不换渲染器、不改显示）：拦截 update 跳过首次构建 → 等容器尺寸就绪 →
-// calcLayout(force) 把行直接放到目标位置（setTransform force 分支 setPosition 直设当前位置且不构建）
-// → 只构建视口内可见行；再配合 patchAMLLRenderStyles 消除每行无条件样式写入。
-async function amllSetLyricLinesNoBurst(player, lines, initialTime) {
-const origUpdate = player.update;
-player.update = function () {};
+/* ── AMLL 动态背景宿主桥接（js/dynamic-bg.js 通过它反向取用主程序状态）──────────
+   注意：注册语句必须晚于其全部依赖的初始化位置——依赖 amllCoreModule/amllPlayer
+   （let，见文件前段）与 isMobile()（函数声明，上方已定义）。历史上 spatial3d 引导块
+   因早于依赖声明而触发 TDZ 并被 try/catch 静默吞掉（见
+   HarmoniaApp/tests/spatial3d-bootstrap.test.js），此处沿用同一防线的约束。
+   动态背景模块只依赖本契约，不直接读 localStorage、不自行判定运行平台。 */
+window.HarmoniaDynamicBgHost = {
+isEnabled() {
+return localStorage.getItem(DYNAMIC_BG_ENABLED_KEY) === 'true';
+},
+getSpeed() {
+return readDynamicBgSpeed();
+},
+clampSpeed(value) {
+return clampDynamicBgSpeed(value);
+},
+getCoreModule() {
+return amllCoreModule || null;
+},
+/* 惰性取引擎：只加载 core 模块，不创建歌词播放器。
+   若歌词引擎已加载则直接复用（不产生任何网络请求）；否则按与 ensureAMLLPlayer
+   相同的候选顺序单独拉取 core。刻意不调用 ensureAMLLPlayer()——那会实例化
+   LyricPlayer 并把它挂进 #amLyrics，在「经典布局」模式下属于可见副作用。 */
+async ensureEngine() {
+if (amllCoreModule) return amllCoreModule;
+const candidates = [AMLL_VENDOR_CORE_URL, AMLL_CORE_ESM_URL, AMLL_CORE_ESM_URL];
+let lastErr = null;
+for (let i = 0; i < candidates.length; i++) {
 try {
-player.setLyricLines(lines, initialTime);
-} finally {
-player.update = origUpdate;
+if (i > 0) await new Promise(r => setTimeout(r, i * 1000));
+const mod = await importAmllModule(candidates[i]);
+if (!mod || !mod.BackgroundRender || !mod.MeshGradientRenderer) {
+throw new Error('AMLL Core 缺少动态背景导出');
 }
-patchAMLLRenderStyles(player);
-// 等容器尺寸就绪（size=[0,0] 时 isInSight 全真 → 全量构建风暴；就绪后仅视口内行 built）
+amllCoreModule = mod;
+return mod;
+} catch (err) {
+lastErr = err;
+console.warn(`[DynamicBg] Core 加载失败 (第${i + 1}次):`, err);
+}
+}
+throw lastErr || new Error('AMLL Core 加载失败');
+},
+isMobile,
+isPlaying() {
+return !!(audioPlayer && !audioPlayer.paused && !audioPlayer.ended);
+},
+/* 是否已有曲目被加载（用于区分「用户还没放歌」与「用户暂停了」）。
+   没有曲目时不应把背景冻住——否则用户刚打开开关只看到一片静止，
+   会以为功能坏了（同类体验事故见 spatial3d「开了没反应」）。 */
+hasTrack() {
+return !!currentPlayingId;
+},
+/* 开关切换时由模块回调：负责互斥显隐与播放状态对齐（真正的创建/释放在模块内） */
+onEnabledChange(enabled) {
+document.body.classList.toggle('dynamic-bg-on', !!enabled);
+if (enabled && window.HarmoniaDynamicBg) {
+window.HarmoniaDynamicBg.syncPlaying(this.isPlaying());
+}
+}
+};
+/* ── AMLL 歌词处理配置（core 0.6.0）──────────────────────────────────────────
+   文档「时序与生命周期 · 初始化」推荐在 setLyricLines 之前用 updateLyricProcessConfig
+   一次性下发全部处理配置，避免 setOptimizeOptions 与掩码设置各自触发一次视图重建。
+   优化项语义见 https://amll.dev/reference/core/interfaceoptimizelyricoptions ：
+     - resetLineTimestamps：把行级时间戳对齐到字级，逐字遮罩与行高亮才不会互相错位；
+     - cleanUnintentionalOverlaps：清洗非刻意的短重叠（<500ms），避免相邻行同时高亮；
+     - syncMainAndBackgroundLines：主唱与背景人声时间同步；
+     - tryAdvanceStartTime：让歌词最多提前 600ms 进入，减少"慢半拍"观感。
+   这些均为库默认值，此处显式声明是为了让配置可被本工程单点调整与审计。 */
+const AMLL_OPTIMIZE_OPTIONS = {
+resetLineTimestamps: true,
+cleanUnintentionalOverlaps: true,
+normalizeSpaces: true,
+syncMainAndBackgroundLines: true,
+tryAdvanceStartTime: true,
+};
+/* 不雅用语掩码模式：MaskObsceneWordsMode 由 core 导出；取不到时退回库默认（不掩码），
+   不硬编码枚举值，避免枚举名变化导致静默失效。 */
+function getAMLLMaskMode() {
+const modes = amllCoreModule?.MaskObsceneWordsMode;
+if (!modes) return undefined;
+return modes.Disabled ?? modes.None ?? undefined;
+}
+/* 对已存在的播放器也适用：设置变更后调用会重建视图（库内部行为）。 */
+function applyAMLLProcessConfig(player = amllPlayer) {
+if (!player || typeof player.updateLyricProcessConfig !== 'function') return;
+try {
+const maskMode = getAMLLMaskMode();
+player.updateLyricProcessConfig({
+optimizeOptions: AMLL_OPTIMIZE_OPTIONS,
+...(maskMode === undefined ? {} : { maskMode }),
+});
+} catch (error) {
+console.warn('[AMLL] 下发歌词处理配置失败:', error);
+}
+}
+/* ── 歌词行载入（core 0.6.0）────────────────────────────────────────────────
+   0.5.1 时代这里有两层绕过：一是拦截 update 跳过首次全量构建，二是给每个行组打
+   renderStyles 缓存补丁。两者都以当时的实现为前提，升级后均已不成立：
+
+   1) 0.6.0 的 setLyricLines → rebuildLyricView 内部改用逐步渲染——只在
+      commitChanges() 的 isInRenderRange() 为真时才 rebuildElement()，
+      并新增行组 isUiDirty 脏标记避免重复写样式。全量构建风暴这一前提消失，
+      原有的"拦截 update + 等尺寸就绪 + calcLayout 强制布局"三步 hack 不再需要。
+   2) 旧 renderStyles 缓存键（posY/opacity/blur/bgSlideY/isActive/isBgFirst）未覆盖
+      scale，而 0.6.0 的行组 renderStyles 还要负责 scale 与背景变换，
+      沿用旧键会跳过合法写入、导致被动缩放的行动画卡住，故一并移除。
+
+   保留的只有尺寸守卫：容器隐藏（display:none，size=[0,0]）时不必强行布局，
+   等面板可见后由 resizeAMLLPlayer 按真实尺寸触发一次布局即可。 */
+async function amllSetLyricLinesNoBurst(player, lines, initialTime) {
+player.setLyricLines(lines, initialTime);
 const el = (player.getElement && player.getElement()) || player.element;
 if (el) {
 for (let i = 0; i < 10 && (!player.size || !player.size[1]); i++) {
@@ -4847,9 +5007,26 @@ await new Promise(r => requestAnimationFrame(r));
 void el.getBoundingClientRect();
 }
 }
-await player.calcLayout(true, true);
+if (player.size && player.size[1] > 0) {
+/* 容器尺寸已就绪：按重建原因强制布局一次，让行落到正确位置。
+   0.6.0 的 calcLayout 接受 LayoutReason 值（不再是两个布尔参数），
+   传入无效值会在取 LayoutReasonStrategyMap[reason] 后解引用 undefined 抛错。 */
+const layoutReason = amllCoreModule?.LayoutReason;
+if (layoutReason && typeof player.calcLayout === 'function') {
+await player.calcLayout(layoutReason.RebuildView);
+}
 player.update(0);
 }
+}
+/* 词归一。
+ * ★ 这里此前只保留 {startTime, endTime, word} 三个字段，会把 TTML 解析出的
+ *   ruby（tts:ruby 注音）、obscene（amll:obscene 不雅用语掩码）、emptyBeat
+ *   （amll:empty-beat 空拍）以及 romanWord（逐词音译）全部丢弃——
+ *   即上层解析器解析正确、到这里却被抹平，AMLL 核心因此无法渲染注音与掩码。
+ *   core 0.6.0 的 LyricWord 支持这些字段，故按存在性透传。
+ *   字段语义（实测 ttml 1.0.1）：obscene 为布尔；emptyBeat 为**数值**节拍数
+ *   （amll:empty-beat="2"，官方用 parseInt 解析，故 "true" 会得到 NaN 被丢弃，
+ *   此处同样按数值透传，不做布尔化以免丢失节拍数）。 */
 function normalizeAMLLWord(word, fallbackStart, fallbackEnd) {
 const startTime = Number.isFinite(Number(word?.startTime))
 ? Math.round(Number(word.startTime))
@@ -4857,11 +5034,25 @@ const startTime = Number.isFinite(Number(word?.startTime))
 const endTime = Number.isFinite(Number(word?.endTime))
 ? Math.round(Number(word.endTime))
 : (Number.isFinite(Number(word?.end)) ? msFromSeconds(word.end, fallbackEnd) : fallbackEnd);
-return {
+const normalized = {
 startTime: Math.max(0, startTime),
 endTime: Math.max(Math.max(0, startTime) + 1, endTime),
 word: String(word?.word ?? word?.text ?? '')
 };
+if (word?.romanWord) normalized.romanWord = String(word.romanWord);
+if (Array.isArray(word?.ruby) && word.ruby.length) {
+normalized.ruby = word.ruby
+.map(r => ({
+startTime: Math.round(Number(r?.startTime) || 0),
+endTime: Math.round(Number(r?.endTime) || 0),
+word: String(r?.word ?? r?.text ?? '')
+}))
+.filter(r => r.word && r.endTime > r.startTime);
+if (!normalized.ruby.length) delete normalized.ruby;
+}
+if (word?.obscene !== undefined) normalized.obscene = !!word.obscene;
+if (word?.emptyBeat !== undefined) normalized.emptyBeat = word.emptyBeat;
+return normalized;
 }
 function getLyricWordText(word) {
 return String(word?.word ?? word?.text ?? '');
@@ -5081,10 +5272,23 @@ const startTime = msFromSeconds(line.time, 0);
 const next = lyrics[index + 1];
 const endTime = next ? msFromSeconds(next.time, startTime + 5000) : startTime + 5000;
 const translatedLyric = mapping[index] !== -1 ? (translations[mapping[index]]?.text || '') : '';
+/* 逐字时间：parseLyrics 走官方 parseLrcLike 时，LRC A2 / SPL 的行内逐字标记
+   （尖括号或方括号形式）会一并解析出 words[]。有逐字信息就保留，
+   否则退回「整行一个词」——这也是普通 LRC 的必然结果。 */
+const timedWords = (Array.isArray(line.words) ? line.words : [])
+.filter(w => Number.isFinite(w.start) && Number.isFinite(w.end) && w.end > w.start)
+.map(w => ({
+startTime: msFromSeconds(w.start, startTime),
+endTime: msFromSeconds(w.end, endTime),
+word: w.text,
+}));
+const words = timedWords.length > 1
+? timedWords
+: [{ startTime, endTime, word: timedWords[0]?.word ?? line.text }];
 return {
 startTime,
-endTime,
-words: [{ startTime, endTime, word: line.text }],
+endTime: Math.max(endTime, words[words.length - 1].endTime),
+words,
 translatedLyric
 };
 }));
@@ -5319,21 +5523,32 @@ if (bgLine) lines.push(bgLine);
 }
 return normalizeAMLLLines(lines);
 }
+/* 官方 parseTTML 输出 → 工程内部行模型 的适配器。
+ * 实现与测试均在 js/lib/pure.js（纯函数，node --test 直接覆盖）；
+ * 此处为委托封装——main.js 的全局同名包装保证既有调用点不变。
+ * 形状差异说明见 pure.js:adaptAmllTtmlLines。 */
+function adaptAmllTtmlLines(parsed) {
+return HarmoniaLib.adaptAmllTtmlLines(parsed);
+}
+/* TTML 解析入口。
+ * 与旧实现的顺序相反：官方 parseTTML 优先，手写 simpleTTMLToAMLLLines 降级为兜底。
+ * 旧实现先跑手写解析、非空即 return，导致官方解析器从未被调用，
+ * 于是 TTML 文档中列出的能力全部缺失——最典型的是 Apple Music 风格 Head Sidecar
+ * （<iTunesMetadata><translations>/<transliterations>），amll-ttml-db 与社区 TTML
+ * 大量使用该写法；此外还有 tts:ruby 注音、amll:obscene、amll:empty-beat。
+ * 手写解析器保留为兜底：社区 TTML 格式变体繁多，双路径比单路径更稳。 */
 function parseTTMLContentToAMLLLines(ttmlContent) {
-const locallyParsed = simpleTTMLToAMLLLines(ttmlContent);
-if (locallyParsed.length) return locallyParsed;
 if (amllLyricModule?.parseTTML) {
 try {
-const parsed = amllLyricModule.parseTTML(ttmlContent);
-const parsedLines = parsed?.lines || parsed?.lyricLines || [];
-const markedLines = parsedLines.map(line => ({ ...line, _fromTtml: true }));
-const normalized = normalizeAMLLLines(markedLines);
+const adapted = adaptAmllTtmlLines(amllLyricModule.parseTTML(ttmlContent));
+const normalized = normalizeAMLLLines(adapted);
 if (normalized.length) return normalized;
+console.warn('[AMLL] 官方 parseTTML 未解析出歌词行，回退手写解析器');
 } catch (error) {
-console.warn('[AMLL] parseTTML 失败:', error);
+console.warn('[AMLL] parseTTML 失败，回退手写解析器:', error);
 }
 }
-return [];
+return simpleTTMLToAMLLLines(ttmlContent);
 }
 async function renderAMLLLines(lines, options = {}) {
 lines = filterAMLLCredits(lines);   /* 署名过滤：覆盖全部渲染入口（含非逐字路径） */
@@ -5857,7 +6072,38 @@ console.error('Error fetching lyrics:', e);
 return null;
 }
 }
-function parseWordLyrics(yrcText, format = 'yrc') {
+/* 官方 AMLL 行 → 工程既有「逐字歌词行」形状。
+ * 工程内部有两条数据形态：逐字行（time/end/words[].{start,end,text}，来自各平台接口）
+ * 与 AMLL 行（startTime/endTime/words[].word）。此处把前者所需要的字段从官方输出映射回来，
+ * 以免下游 filterLyricCredits / legacyWordLinesToAMLLLines / 翻译对齐全部改写。
+ * 实现与测试在 js/lib/pure.js。 */
+function amllLinesToLegacyWordLines(lines) {
+return HarmoniaLib.amllLinesToLegacyWordLines(lines);
+}
+/* 网易云逐字（YRC）/ QQ 音乐逐字（QRC）解析。
+ * 官方 parser 优先：相比原手写正则，官方实现额外完成文档
+ * （https://amll.dev/guides/lyric/formats#网易云逐字与-qq-音乐逐字）明确描述的行为：
+ *   - 整行被圆括号包裹 → 识别为背景人声行并去除括号；
+ *   - 不含时间戳的圆括号按歌词正文处理（QRC），而非被正则吞掉；
+ *   - 词尾空白按格式规范合并到前一个词，不做跨词合并。
+ * 手写实现降级为兜底：应对格式变体与官方 parser 抛错的场景。
+ * 注意 KRC 是酷狗私有格式，走独立的 parseKugouKrc，不在此列。 */
+function parseWordLyrics(wordLyricText, format = 'yrc') {
+if (!wordLyricText || typeof wordLyricText !== 'string') return [];
+const isQrc = format === QRC || /qrc/i.test(String(format));
+const officialParser = isQrc ? amllLyricModule?.parseQrc : amllLyricModule?.parseYrc;
+if (typeof officialParser === 'function') {
+try {
+const parsed = amllLinesToLegacyWordLines(officialParser(wordLyricText));
+if (parsed.length) return parsed;
+console.warn('[AMLL] 官方 ' + (isQrc ? 'parseQrc' : 'parseYrc') + ' 未解析出歌词行，回退手写解析器');
+} catch (error) {
+console.warn('[AMLL] 官方 ' + (isQrc ? 'parseQrc' : 'parseYrc') + ' 失败，回退手写解析器:', error);
+}
+}
+return parseWordLyricsLegacy(wordLyricText);
+}
+function parseWordLyricsLegacy(yrcText, format = 'yrc') {
 if (!yrcText || typeof yrcText !== 'string') return [];
 const lines = yrcText.split('\n').filter(x => x.trim());
 const result = [];
@@ -6741,6 +6987,8 @@ bgDiv.style.setProperty('filter', 'blur(30px) brightness(0.6)', 'important');
 bgDiv.style.setProperty('transform', 'scale(1.2)', 'important');
 bgDiv.style.backgroundColor = 'transparent';
 console.log('[loadAlbumArt] 模糊背景设置成功');
+/* 动态背景：img 已带 crossOrigin='anonymous'，直接传元素可省一次网络加载 */
+window.HarmoniaDynamicBg?.notifyCover(url, img);
 };
 img.onerror = (err) => {
 console.error('[loadAlbumArt] 图片加载失败:', err, 'URL:', url);
@@ -7083,7 +7331,7 @@ if (cachedSong && cachedSong.audioUrl) {
     audioUrl = cachedSong.audioUrl;
     /* 应用缓存的封面 */
     if (cachedSong.albumArtUrl) {
-        applyAlbumArtWithPreload(cachedSong.albumArtUrl, () => {
+        applyAlbumArtWithPreload(cachedSong.albumArtUrl, (preImg) => {
         albumArt.src = cachedSong.albumArtUrl;
         lastAppliedCoverUrl = cachedSong.albumArtUrl;
         sendCoverToPip(cachedSong.albumArtUrl);
@@ -7097,6 +7345,8 @@ if (cachedSong && cachedSong.audioUrl) {
             bgDiv.style.setProperty('filter', 'blur(30px) brightness(0.6)', 'important');
             bgDiv.style.backgroundColor = 'transparent';
         }
+        /* 动态背景：复用同一份已就绪封面，不额外发起图片请求 */
+        window.HarmoniaDynamicBg?.notifyCover(cachedSong.albumArtUrl, preImg);
         });
     }
     /* 应用缓存的歌词 */
@@ -7115,7 +7365,7 @@ if (cachedSong && cachedSong.audioUrl) {
     /* 封面由 getAlbumArtUrl 返回 URL，手动应用到DOM（此时 lyrics 已渲染完毕） */
     if (albumArtUrl) {
         albumArt.src = albumArtUrl;
-        applyAlbumArtWithPreload(albumArtUrl, () => {
+        applyAlbumArtWithPreload(albumArtUrl, (preImg) => {
         albumArt.src = albumArtUrl;
         lastAppliedCoverUrl = albumArtUrl;
         sendCoverToPip(albumArtUrl);
@@ -7129,6 +7379,8 @@ if (cachedSong && cachedSong.audioUrl) {
             bgDiv.style.setProperty('filter', 'blur(30px) brightness(0.6)', 'important');
             bgDiv.style.backgroundColor = 'transparent';
         }
+        /* 动态背景：复用同一份已就绪封面，不额外发起图片请求 */
+        window.HarmoniaDynamicBg?.notifyCover(albumArtUrl, preImg);
         });
     }
     /* 写入缓存（使用全局变量获取已渲染的歌词数据和选项） */
@@ -7209,7 +7461,32 @@ currentActivePlaylist = currentSearchResults;
 await playSong(currentSearchResults[index], false);
 currentPlaylistIdx = -1;
 }
-function parseLyrics(lyricText){ return HarmoniaLib.parseLyrics(lyricText); }
+/* LRC 家族解析：官方 parseLrcLike 优先，pure.js 手写实现兜底。
+ *
+ * 官方入口按文档（https://amll.dev/guides/lyric/quickstart）覆盖整个 LRC 家族——
+ * 普通 LRC / LRC A2 / SPL / ESLyric 同属一个语法家族，解析规则以 SPL 标准为准。
+ * 手写实现只识别 [mm:ss.xx] 与 [mm:ss:xx]，且把「多时间戳行」折叠为最早的一个；
+ * 官方实现额外支持：
+ *   - SPL 规范时间戳（分 1~3 位、秒 1~2 位、毫秒 1~6 位，不足 3 位视为后位补 0）；
+ *   - 显式行结尾（行末再写一个时间戳）；
+ *   - 行内逐字标记（尖括号形式，LRC A2 / SPL）；
+ *   - `#` 与 `//` 开头的注释行。
+ * 手写实现保留为兜底，并继续作为 pure.js 的可测试契约（tests/js/pure.test.js 覆盖）。
+ *
+ * 注意返回形状：本函数保持既有契约 [{ time(秒), text, translation }]，不返回官方
+ * LyricParseResult 的元数据（本工程各处均按行数组消费；元数据在本工程另有来源）。 */
+function parseLyrics(lyricText) {
+if (!lyricText) return [];
+if (amllLyricModule?.parseLrcLike) {
+try {
+const lines = amllLinesToLegacyWordLines(amllLyricModule.parseLrcLike(String(lyricText)).lines);
+if (lines.length) return lines;
+} catch (error) {
+console.warn('[AMLL] parseLrcLike 失败，回退手写 LRC 解析:', error);
+}
+}
+return HarmoniaLib.parseLyrics(lyricText);
+}
 async function displayAMLyrics(lyricResponse) {
 if (!lyricResponse || !lyricResponse.lyric) {
 return await renderAMLLLines([], { emptyText: '暂无歌词' });
@@ -9058,6 +9335,11 @@ audioPlayer.addEventListener('ended', stopWordLyricLoop);
 audioPlayer.addEventListener('play', resumeAMLLPlayer);
 audioPlayer.addEventListener('pause', pauseAMLLPlayer);
 audioPlayer.addEventListener('ended', pauseAMLLPlayer);
+/* 动态背景动画与歌词动画独立（文档「同步播放状态」允许只控制背景），
+   但用户预期是「暂停即静止」，故与歌词共用同一组事件 */
+audioPlayer.addEventListener('play', () => { window.HarmoniaDynamicBg?.syncPlaying(true); });
+audioPlayer.addEventListener('pause', () => { window.HarmoniaDynamicBg?.syncPlaying(false); });
+audioPlayer.addEventListener('ended', () => { window.HarmoniaDynamicBg?.syncPlaying(false); });
 (function setupRememberProgress(){
 const enabled = () => localStorage.getItem('rememberProgressEnabled') === 'true';
 let _lastProgressSave = 0;
@@ -9210,6 +9492,16 @@ return queue.find(item => item.id === id)
 function getPlaylistIndexById(id) {
 return getActivePlayQueue().findIndex(item => item.id === id);
 }
+/* 速度滑块旁的倍率徽标与禁用态：开关关闭时点亮禁用样式，让「当前不可调」可预期 */
+function syncDynamicBgSpeedUI() {
+const slider = document.getElementById('dynamicBgSpeedSlider');
+const item = document.getElementById('dynamicBgSpeedItem');
+const label = document.getElementById('dynamicBgSpeedValue');
+const enabled = window.HarmoniaDynamicBgHost.isEnabled();
+if (slider) slider.disabled = !enabled;
+if (item) item.classList.toggle('disabled', !enabled);
+if (label) label.textContent = readDynamicBgSpeed().toFixed(1) + '×';
+}
 function loadVisualSettings() {
 const saved = localStorage.getItem(ALBUM_KEY);
 const isEnabled = saved === 'true';
@@ -9223,6 +9515,17 @@ const trackTransitionToggle = document.getElementById('trackTransitionToggle');
 if (trackTransitionToggle) {
 trackTransitionToggle.checked = isTrackTransitionEnabled();
 }
+/* 动态背景：回填开关与速度滑块初值（此处只同步 UI，不启动引擎——
+   真正启用由文件尾 init() 之后的 bootstrap() 统一处理） */
+const dynamicBgToggle = document.getElementById('dynamicBgToggle');
+if (dynamicBgToggle) {
+dynamicBgToggle.checked = window.HarmoniaDynamicBgHost.isEnabled();
+}
+const dynamicBgSpeedSlider = document.getElementById('dynamicBgSpeedSlider');
+if (dynamicBgSpeedSlider) {
+dynamicBgSpeedSlider.value = String(readDynamicBgSpeed());
+}
+syncDynamicBgSpeedUI();
 }
 function saveVisualSettings() {
 const selectedMode = document.querySelector('input[name="lyricsAnimationMode"]:checked')?.value || 'visual';
@@ -9270,6 +9573,29 @@ trackTransitionToggle.addEventListener('change', function() {
 localStorage.setItem(TRACK_TRANSITION_KEY, this.checked ? 'true' : 'false');
 showDynamicIslandToast(this.checked ? '已开启歌曲过渡动画' : '已关闭歌曲过渡动画', 2000);
 });
+}
+/* 动态背景开关（视觉）：持久化后由 js/dynamic-bg.js 负责创建/释放渲染器 */
+const _dynamicBgToggleEl = document.getElementById('dynamicBgToggle');
+if (_dynamicBgToggleEl) {
+_dynamicBgToggleEl.addEventListener('change', function() {
+localStorage.setItem(DYNAMIC_BG_ENABLED_KEY, this.checked ? 'true' : 'false');
+syncDynamicBgSpeedUI();
+if (window.HarmoniaDynamicBg) window.HarmoniaDynamicBg.setEnabled(this.checked);
+showDynamicIslandToast(this.checked ? '已开启动态背景' : '已关闭动态背景', 2000);
+});
+}
+/* 动态背景流动速度（视觉）：拖动即时生效，无需确认 */
+const _dynamicBgSpeedEl = document.getElementById('dynamicBgSpeedSlider');
+if (_dynamicBgSpeedEl) {
+const onSpeedInput = () => {
+const speed = clampDynamicBgSpeed(_dynamicBgSpeedEl.value);
+localStorage.setItem(DYNAMIC_BG_SPEED_KEY, String(speed));
+const label = document.getElementById('dynamicBgSpeedValue');
+if (label) label.textContent = speed.toFixed(1) + '×';
+if (window.HarmoniaDynamicBg) window.HarmoniaDynamicBg.applyCurrentSettings();
+};
+_dynamicBgSpeedEl.addEventListener('input', onSpeedInput);
+_dynamicBgSpeedEl.addEventListener('change', onSpeedInput);
 }
 if (enableWordLyricJump) {
 enableWordLyricJump.addEventListener('change', function() {
@@ -9790,6 +10116,15 @@ try {
 init();
 } catch (err) {
 console.error('[init] 初始化失败:', err);
+}
+/* 动态背景启动：必须晚于 init()（loadVisualSettings 会回填开关状态）。
+   开关未开启时此处不做任何事，禁用态不创建 WebGL 上下文、不占用 GPU。
+   本调用位于文件尾，全部依赖（DYNAMIC_BG_* 常量、isMobile、amllCoreModule、
+   audioPlayer、HarmoniaDynamicBgHost）均已初始化，不存在 TDZ 风险。 */
+try {
+if (window.HarmoniaDynamicBg) window.HarmoniaDynamicBg.bootstrap();
+} catch (err) {
+console.warn('[DynamicBg] 启动失败:', err);
 }
 /* 开屏动画：主界面初始化结束（无论成败都要露出主界面）后通知 splash 淡出；
    最短展示时长与超时兜底由 js/splash.js 保证，此处只发信号 */
@@ -12378,6 +12713,8 @@ albumArt.src = url;
 lastAppliedCoverUrl = url;
 sendCoverToPip(url);
 albumArt.classList.add('loaded');
+/* 智能过渡路径：这里只有 URL（预加载的 preImg 未透传），传 URL 由 AMLL 自行加载 */
+window.HarmoniaDynamicBg?.notifyCover(url);
 const bgDiv = document.querySelector('.am-background');
 if (bgDiv) {
 bgDiv.style.setProperty('background-image', `url(${url})`, 'important');
@@ -14608,7 +14945,7 @@ if(window.requestIdleCallback)requestIdleCallback(()=>{import(AMLL_CORE_ESM_URL)
 const HARMONIA_MIGRATION_VERSION = 1;
 const HARMONIA_MIGRATION_GROUPS = {
   playlists: ['musicPlaylist', 'harmoniaPlaylists', 'musicFavorites', 'musicHistory', 'musicPlayerCustomOrder'],
-  settings: ['musicPlayerVolume', 'playbackRate', 'rememberProgressEnabled', 'spatial3dEnabled', 'desktopLyricsPipEnabled', 'miniPlayerLyricsPillEnabled', 'lyricsSettings', 'wordLyricsSource', 'lyricsRendererMode', 'lyricsAnimationMode', 'timeDisplayMode', 'liquidGlassStyle', 'amllTtmlSource', 'musicSource', 'crossfadeEnabled', 'smartTransitionEnabled', 'stAnalysisCache', 'stMixDuration', 'krcRemoveCredits', 'kugouAudioQuality', 'mvFeatureEnabled', 'albumEffectEnabled', 'trackTransitionEnabled', 'musicPlayerEqSettings', 'settings-bg-mode', 'startupBgFetched', 'lastPlayPosition', 'harmoniaSleepTimer'],
+  settings: ['musicPlayerVolume', 'playbackRate', 'rememberProgressEnabled', 'spatial3dEnabled', 'desktopLyricsPipEnabled', 'miniPlayerLyricsPillEnabled', 'lyricsSettings', 'wordLyricsSource', 'lyricsRendererMode', 'lyricsAnimationMode', 'timeDisplayMode', 'liquidGlassStyle', 'amllTtmlSource', 'musicSource', 'crossfadeEnabled', 'smartTransitionEnabled', 'stAnalysisCache', 'stMixDuration', 'krcRemoveCredits', 'kugouAudioQuality', 'mvFeatureEnabled', 'albumEffectEnabled', 'trackTransitionEnabled', 'dynamicBgEnabled', 'dynamicBgSpeed', 'musicPlayerEqSettings', 'settings-bg-mode', 'startupBgFetched', 'lastPlayPosition', 'harmoniaSleepTimer'],
   api: ['translationSettings', 'kugouToken', 'kugouUserId', 'kugouDfid', 'kugouNickname', 'kugouPic']
 };
 function collectHarmoniaMigrationData() {
