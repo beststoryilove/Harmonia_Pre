@@ -42,15 +42,6 @@
 
    背景为两层：顶部环境高光 + tint。高光必须作为 background 的一层，
    不能用 ::after 叠加（伪元素会画在内容之上，详见下方说明）。 */
-/* 注意：这里**不能**统一下 position: relative。
-   该选择器特异性为 (0,2,0)，高于 .sidebar / .dynamic-island 自身的 (0,1,0)，
-   一旦写入就会把两者的 position:fixed 静默改写为 relative：
-   - .sidebar 由全高抽屉（320x805 @ y=0）塌缩成文档流内 320x397 的短盒子（@ y=40），
-     内容被拦腰截断、遮罩层错位；
-   - .dynamic-island 失去 fixed 定位语义（本例恰好未位移，属侥幸）。
-   描边环 ::before 只需要「某个已定位祖先」即可，而 .sidebar / .dynamic-island
-   本身就是 position:fixed，.liquid-glass 在 base.css 里已是 position:relative，
-   故只有 .player-controls（全项目唯一没有 position 声明的目标）需要在下方单列补上。 */
 [data-glass-style="refraction"] .liquid-glass,
 [data-glass-style="refraction"] .dynamic-island,
 [data-glass-style="refraction"] .sidebar,
@@ -146,11 +137,7 @@
   padding-left: 0 !important;
 }
 
-/* 播放控制条：只在上缘显示描边，贴合其「底部面板」的形态。
-   它是四个目标中唯一自身没有 position 声明的（responsive.css 只给了
-   backdrop-filter / background / border / padding），描边环 ::before 需要已定位祖先，
-   故在此单独补 position: relative。此处无需 !important：该元素本无 position 声明，
-   不存在需要压制的竞争声明。 */
+/* 播放控制条：只在上缘显示描边，贴合其「底部面板」的形态 */
 [data-glass-style="refraction"] .player-controls {
   position: relative;
   border: none !important;

@@ -11,6 +11,7 @@
 @keyframes win-spin {
     to { transform: rotate(360deg); }
 }
+
 /* ── 歌词大小快捷调节（用户需求 2026-09-05）：歌词界面右上角 Aa 按钮 → 连续滑块（50%–150%）。
    通过 --lyrics-size-scale 乘数缩放主歌词界面与移动全屏字号（100% = 默认），localStorage 记忆。
    UI 置于 #rightcontent（歌词壳外）以避开 .lyricscontainer 的顶部/底部渐隐遮罩。 */
