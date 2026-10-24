@@ -29,7 +29,6 @@
   pointer-events:none;
 }
 
-
 /* 背景叠加层（增强可读性） */
 .poster-modal-bg::after{
   content:'';
@@ -43,7 +42,6 @@
     rgba(0,0,0,0.45) 100%
   );
 }
-
 
 /* 模态框内容容器 */
 .poster-modal-content{
@@ -66,7 +64,6 @@
   transform:scale(1) translateY(0);
 }
 
-
 /* 玻璃高光层 */
 .poster-modal-content::before{
   content:'';
@@ -80,7 +77,6 @@
   opacity:0.6;
 }
 
-
 /* 头部 */
 .poster-modal-header{
   position:relative;
@@ -91,7 +87,6 @@
   margin-bottom:20px;
   color:var(--text-dark);
 }
-
 
 /* 关闭按钮 */
 .poster-modal-close{
@@ -115,8 +110,6 @@
   transform:scale(1.05);
 }
 
-
-
 /* 预览容器 */
 .poster-preview-container{
   position:relative;
@@ -130,7 +123,6 @@
   box-shadow:0 20px 60px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.08);
   border-radius:16px;
 }
-
 
 /* 操作按钮 */
 .poster-actions{
@@ -155,22 +147,28 @@
   border-radius:1px;
   margin:0 auto 10px;
 }
-
 .poster-footer-text{
   font-size:12px;
   font-weight:600;
   color:rgba(255,255,255,0.5);
   letter-spacing:0.5px;
 }
-
 .poster-footer-hint{
   font-size:11px;
   color:rgba(255,255,255,0.3);
   margin-top:3px;
 }
 
-
 /* 加载动画 */
+/* 加载动画（保持原设计，未删除）。
+   曾评估删除：本动画动的是 background-position（不可合成 → 每帧主线程重绘），
+   而该 <img> 位于 .settings-container.liquid-glass（backdrop-filter:blur(42px)）内，
+   每次重绘都要重新合成祖先玻璃层；更关键的是 .loading 原先只在 onerror 被移除，
+   成功加载后这道微光会一直空转（虽然被图片内容盖住、看不见，却仍在烧 CPU）。
+   最终选择保留动画 + 修根因：main.js 现在在 onload 与 onerror 两条路径都移除 .loading，
+   于是微光只在「图片真正加载中」这段有界窗口内运行——这正是它的设计用途。
+   未改用伪元素 translateX 方案的原因：#kugouAvatar 是 <img>（替换元素），
+   ::before/::after 在替换元素上不生成盒子，无法在不改 HTML 的前提下复刻扫光几何。 */
 #kugouAvatar.loading{
   animation:kugouAvatarPulse 1.2s ease-in-out infinite;
   background:linear-gradient(90deg,rgba(255,255,255,0.1) 25%,rgba(255,255,255,0.2) 50%,rgba(255,255,255,0.1) 75%);

@@ -11,17 +11,25 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' blob: https://esm.sh https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: https: http:; connect-src 'self' blob: https: http: ws: wss:; font-src 'self' data: https://cdnjs.cloudflare.com; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"/>
 <meta name="description" content="Harmonia - 一个美观易用的在线音乐播放器"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=5.0"/>
-<link rel="icon" href="favicon.ico"/>
 <title>Harmonia - 音乐播放器</title>
-  <!-- 客户端（Electron/Capacitor）不使用网页 favicon，已移除引用以省去无谓资源拷贝 -->
-  <!-- 开屏加载动画样式（首帧即显示，资源就绪后由 js/splash.js 淡出移除） -->
-  <link rel="stylesheet" href="css/splash.css"/>
-  <noscript><style>#splashScreen{display:none!important}</style></noscript>
-  <!-- 第三方样式已本地化（Font Awesome 6.4.0 与 AMLL 歌词引擎样式，打包后不依赖 CDN） -->
-  <link rel="stylesheet" href="css/vendor/fa/css/all.min.css"/>
-  <link rel="stylesheet" href="css/vendor/amll-core.css"/>
-  <!-- 应用样式（独立外部文件） -->
-  <link rel="stylesheet" href="css/variables.css"/>
+<link rel="icon" href="favicon.ico"/>
+<!-- 开屏加载动画样式（首帧即显示，资源就绪后由 js/splash.js 淡出移除） -->
+<link rel="stylesheet" href="css/splash.css"/>
+<noscript><style>#splashScreen{display:none!important}</style></noscript>
+<!-- 非关键第三方样式异步加载（Font Awesome 6.4.0 带 SRI 完整性校验） -->
+<link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" as="style" crossorigin="anonymous" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" onload="this.onload=null;this.rel=&quot;stylesheet&quot;"/>
+<noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" crossorigin="anonymous" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw=="/></noscript>
+<!-- AMLL 核心样式：必须与 js/vendor/amll-core.bundle.mjs（core 0.6.0）同版本。
+     原为 https://unpkg.com/@applemusic-like-lyrics/core@0.5.1/dist/style.css —— 引擎升到
+     0.6.0 后样式仍是 0.5.1，二者不兼容：0.6.0 改用 mask-image 渐变实现逐字高亮，
+     依赖 CSS 变量 --bright-mask-alpha / --dark-mask-alpha 与 .FmKaba_gradientMask 类
+     （这两者都只在 0.6.0 样式里存在）。样式缺失时 JS 的兜底值取 1，导致渐变两侧
+     完全同色 —— 表现为所有歌词不分已唱/未唱一律全白，失去逐字高亮。
+     改为引用随 bundle 一起产出的本地样式（tools/amll-build 构建），同时去掉对 CDN 的依赖。
+     异步加载方式保留：非关键路径，不阻塞首屏（media=print → onload 切 all）。 -->
+<link rel="stylesheet" href="css/vendor/amll-core.css" media="print" onload="this.media=&quot;all&quot;"/>
+<!-- 应用样式（独立外部文件） -->
+<link rel="stylesheet" href="css/variables.css"/>
 <link rel="stylesheet" href="css/titlebar.css?v=2"/>
 <link rel="stylesheet" href="css/base.css"/>
 <!-- 新液态玻璃材质层（仅在 <html data-glass-style="refraction"> 时生效） -->
@@ -32,14 +40,19 @@
 <link rel="stylesheet" href="css/player.css"/>
 <link rel="stylesheet" href="css/settings.css"/>
 <link rel="stylesheet" href="css/lyrics.css?v=2"/>
+<link rel="stylesheet" href="css/lyric-engine.css?v=1"/>
 <!-- AMLL 动态背景宿主样式（背景容器 + 速度滑块；仅开关开启时生效） -->
 <link rel="stylesheet" href="css/dynamic-bg.css?v=1"/>
 <link rel="stylesheet" href="css/share.css"/>
 <link rel="stylesheet" href="css/responsive.css"/>
 <link rel="stylesheet" href="css/discovery.css?v=2"/>
 <link rel="stylesheet" href="css/comments.css?v=2"/>
-  <!-- 客户端 AMLL 走本地 bundle（file:/localhost 协议自动判定），无需 esm.sh 预连接 -->
-  <link rel="preconnect" href="https://raw.githubusercontent.com"/>
+<!-- 协议同意门样式（js/consent.js 的表现层；z-index 低于 splash） -->
+<link rel="stylesheet" href="css/consent.css?v=1"/>
+<link rel="preconnect" href="https://cdnjs.cloudflare.com"/>
+<link rel="preconnect" href="https://esm.sh"/>
+<link rel="preconnect" href="https://unpkg.com"/>
+<link rel="preconnect" href="https://raw.githubusercontent.com"/>
 <link rel="preconnect" href="https://v2.xxapi.cn"/>
 </head>
 <body>
@@ -310,6 +323,20 @@
             </div>
             <label class="switch"><input type="checkbox" id="trackTransitionToggle" aria-label="歌曲过渡动画"><span class="slider"></span></label>
           </div>
+          <div class="setting-item">
+            <div class="item-info">
+              <div class="item-label">灵动岛内搜索设置项</div>
+              <div class="item-desc">在设置窗口内展开灵动岛搜索时，搜索设置功能而非歌曲；点击结果直达对应设置项。</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="islandSettingsSearchToggle" aria-label="灵动岛内搜索设置项"><span class="slider"></span></label>
+          </div>
+          <div class="setting-item">
+            <div class="item-info">
+              <div class="item-label">专辑图随播放状态缩放</div>
+              <div class="item-desc">播放时专辑图放大、暂停或取音频时缩小；切歌不改变大小</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="coverScaleToggle" aria-label="专辑图随播放状态缩放"><span class="slider"></span></label>
+          </div>
           <div class="setting-item vertical">
             <div class="item-label">液态玻璃样式</div>
             <div class="segmented-control" id="liquidGlassStyleControl">
@@ -332,17 +359,6 @@
             <div class="item-label">流动速度 <span id="dynamicBgSpeedValue">1.0×</span></div>
             <input type="range" class="lyrics-size-slider" id="dynamicBgSpeedSlider" min="0.2" max="3" step="0.1" value="1" aria-label="动态背景流动速度"/>
             <div class="item-desc" style="margin-top:4px;">0.2× 最缓慢，1.0× 为标准速度，3.0× 最快；拖动即时生效。</div>
-          </div>
-        </div>
-        <div class="settings-group" id="dlpTransparentGroup" style="display:none;">
-          <div class="group-title">PiP 桌面歌词</div>
-          <div class="setting-item vertical">
-            <div class="item-label">背景样式</div>
-            <div class="segmented-control" id="dlpBgModeControl">
-              <label><input type="radio" name="dlpBgMode" value="blur" checked><span>专辑图模糊</span></label>
-              <label><input type="radio" name="dlpBgMode" value="transparent"><span>透明背景</span></label>
-            </div>
-            <div class="item-desc" style="margin-top: 6px;">专辑图模糊：以专辑封面高斯模糊作为背景；透明背景：直接透出桌面歌词窗口后方的画面。切换后立即生效（仅 Windows 桌面端）。</div>
           </div>
         </div>
         <div class="settings-group">
@@ -479,9 +495,17 @@
                 </div>
               </div>
             </div>
+            <div class="setting-item">
+              <div class="item-info">
+                <div class="item-label">每天首次打开时自动领取</div>
+                <div class="item-desc">开启后每天打开应用时自动领取一次当日 VIP 权益；失败也不会重复打扰你。</div>
+              </div>
+              <label class="switch"><input type="checkbox" id="kugouVipAutoToggle" aria-label="每天首次打开时自动领取 VIP 权益"><span class="slider"></span></label>
+            </div>
             <div class="setting-item vertical">
               <div class="vip-actions">
                 <button id="kugouVipRefreshBtn" class="ios-btn secondary" type="button"><i class="fas fa-sync-alt"></i> 刷新状态</button>
+                <button id="kugouVipAutoBtn" class="ios-btn primary" type="button"><i class="fas fa-bolt"></i> 领取并升级</button>
               </div>
               <div class="vip-tip" id="kugouVipProgressText">实际权益以酷狗返回为准；领取进度会实时显示在下方。</div>
             </div>
@@ -514,9 +538,19 @@
           </div>
 
           <div class="setting-item vertical">
+            <div class="item-label">翻译范围</div>
+            <div class="segmented-control" style="flex-wrap: wrap;">
+              <label><input type="radio" name="translationScope" value="no-translation" checked><span>仅翻译无译版</span></label>
+              <label><input type="radio" name="translationScope" value="all-foreign"><span>翻译所有外语歌</span></label>
+              <label><input type="radio" name="translationScope" value="all"><span>翻译所有歌曲</span></label>
+            </div>
+            <div class="item-desc" style="margin-top: 6px;">「仅翻译无译版」只翻没有现成译文的外语歌；「翻译所有外语歌」会连同无法判定语言的歌词（如无时间轴的歌词）一起翻译，仅明显的中文歌跳过；「翻译所有歌曲」无条件全翻（中文歌也会翻译，可能产生不必要的 API 调用）。</div>
+          </div>
+
+          <div class="setting-item vertical">
             <div class="item-label">API 令牌</div>
             <input type="password" class="ios-input" id="apiTokenInput" placeholder="请输入 API 密钥">
-            <div class="item-desc" style="margin-top: 4px;">大部分服务商使用 Bearer Token 认证。桌面端密钥经 OS 密钥环加密持久化；网页/移动端仅存会话内存（关闭标签页或重启后需重新输入），请勿使用高权限密钥。</div>
+            <div class="item-desc" style="margin-top: 4px;">大部分服务商使用 Bearer Token 认证。密钥仅保存在会话内存中（关闭标签页即清除），请勿使用高权限密钥。</div>
           </div>
 
 <!-- API 端点预设（位于 "API 令牌" 设置项之后） -->
@@ -531,13 +565,14 @@
     <option value="5">Anthropic</option>
     <option value="6">LongCat</option>
     <option value="7">自定义</option>
+    <option value="8">本地网关</option>
   </select>
 </div>
 
 <div class="setting-item vertical">
   <div class="item-label">API Base URL</div>
   <input type="text" class="ios-input" id="transBaseUrlInput" placeholder="https://api.openai.com/v1" style="width:100%;">
-  <div class="item-desc" style="margin-top:4px;">支持 OpenAI 兼容格式 (如 DeepSeek、通义千问、Moonshot 等)，大部分服务商使用 /v1/chat/completions 路径</div>
+  <div class="item-desc" style="margin-top:4px;">支持 OpenAI 兼容格式 (如 DeepSeek、通义千问、Moonshot 等)，大部分服务商使用 /v1/chat/completions 路径；选择「本地网关」时可指向 127.0.0.1 上的 OpenAI 兼容服务 (Ollama / LM Studio 等)，令牌可留空</div>
 </div>
 
 <div class="setting-item vertical">
@@ -675,7 +710,7 @@
 		          <div class="setting-item" data-mobile-hidden>
             <div class="item-info">
               <div class="item-label">桌面歌词</div>
-	              <div class="item-desc">通过悬浮歌词窗显示歌词（桌面端为 PiP 窗口，Android 为系统悬浮窗），开启后可在播放器右下角控制</div>
+	              <div class="item-desc">通过 PiP 窗口显示桌面歌词，开启后可在播放器右下角控制</div>
 	            </div>
 	            <label class="switch"><input type="checkbox" id="desktopLyricsToggle" aria-label="桌面歌词"><span class="slider"></span></label>
 	          </div>
@@ -736,10 +771,9 @@
         <div class="settings-group">
           <div class="group-title">配置迁移</div>
           <div class="setting-item vertical">
-            <div class="item-label">导入配置文件</div>
-            <div class="item-desc">导入从网页版"实验性功能 → 导出配置文件"导出的 JSON 文件，恢复播放列表与功能设置。API 密钥不随配置导出，导入后需重新输入。</div>
-            <button class="ios-btn primary" id="importConfigBtn" style="margin-top:8px;align-self:flex-start;">导入配置文件</button>
-            <input type="file" id="importConfigFile" accept=".json,application/json" style="display:none;">
+            <div class="item-label">导出配置文件</div>
+            <div class="item-desc">将播放列表与功能设置导出为 JSON 文件，可在桌面/移动应用的"实验性功能 → 导入配置文件"中恢复。API 密钥仅存会话内存（关闭标签页即清除），不在导出文件中。</div>
+            <button class="ios-btn primary" id="exportConfigBtn" style="margin-top:8px;align-self:flex-start;">导出配置文件</button>
           </div>
         </div>
       </div>
@@ -759,6 +793,20 @@
 
       
       <div class="settings-tab-content" data-tab="changelog" role="tabpanel">
+        <div class="settings-group">
+          <div class="group-title">最新开发进度</div>
+          <div class="setting-item vertical" style="gap:0;">
+            <div class="item-desc" style="margin-bottom:8px;">
+              来源：GitHub Issue #7 作者本人评论 ·
+              <a href="https://github.com/beststoryilove/Harmonia-MusicPlayer/issues/7" target="_blank" rel="noopener noreferrer" style="color:var(--primary-color);">查看原帖</a>
+              <button id="devProgressRefresh" type="button" style="margin-left:8px;padding:3px 10px;font-size:12px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.8);cursor:pointer;">获取最新开发进度</button>
+            </div>
+            <div id="devProgressTime" style="font-size:11px;color:rgba(255,255,255,0.35);margin-bottom:6px;"></div>
+            <div id="devProgressContent" style="width:100%;font-size:13px;line-height:1.8;color:rgba(255,255,255,0.75);">
+              <div style="text-align:center;padding:16px;color:rgba(255,255,255,0.35);">正在获取…</div>
+            </div>
+          </div>
+        </div>
         <div class="settings-group">
           <div class="group-title">更新日志</div>
           <div class="setting-item vertical" style="gap:0;">
@@ -1228,9 +1276,45 @@
 <script defer src="js/stFlacRepair.js?v=5"></script>
 <script defer src="js/titlebar.js?v=1"></script>
 <script src="js/lib/pure.js?v=3"></script>
+<!-- 统一请求调度器（非 defer：main.js 是 defer，本文件须先执行完；与 pure.js 同理）。
+     提供按 host 并发/限速、GET 在途去重、429 冷却；缺失时 main.js 自动退化为直连 fetch。 -->
+<script src="js/lib/net-scheduler.js?v=1"></script>
+<!-- GitHub 信息源纯函数库（非 defer：main.js 是 defer，本文件须先执行完；与 pure.js 同理）。
+     承载「最新开发进度」的作者筛选 / 配额冷却 / 30 分钟缓存 / 直连+代理回退。 -->
+<script src="js/lib/github-feed.js?v=1"></script>
+<!-- 设置内搜索纯函数库（非 defer：main.js 是 defer，本文件须先执行完；与 pure.js 同理） -->
+<script src="js/lib/settings-search.js?v=1"></script>
+<!-- Legacy 歌词引擎（classic script，非 defer：须在 defer 的 main.js 之前求值，
+     否则 legacy 渲染分支读不到 window.HarmoniaLyricEngine 会整体回退旧实现） -->
+<script src="js/lib/lyric-engine.js?v=1"></script>
 <!-- 新液态玻璃折射引擎（仅桌面 Chromium 启用；须早于 main.js 以便初始化时读取） -->
 <script defer src="js/liquid-glass-v2.js?v=1"></script>
+<!-- AMLL 动态背景（须早于 main.js：main.js 启动时会调用其 bootstrap） -->
 <script defer src="js/dynamic-bg.js?v=1"></script>
+<script defer src="js/cover-scale.js?v=1"></script>
+<!-- 协议同意门：未同意当前版本《用户协议》/《隐私政策》前强制展示（js/consent.js 控制 hidden 与交互） -->
+<div id="consentGate" role="dialog" aria-modal="true" aria-labelledby="consentTitle" hidden>
+  <div class="consent-card">
+    <h2 class="consent-title" id="consentTitle" tabindex="-1">用户协议与隐私政策更新</h2>
+    <p class="consent-lead">我们更新了<a href="agreement.html" target="_blank" rel="noopener noreferrer">《用户协议》</a>与<a href="privacy.html" target="_blank" rel="noopener noreferrer">《隐私政策》</a>，请您在仔细阅读之后再使用本项目。</p>
+    <ul class="consent-points">
+      <li>您的播放数据与个人歌单仅保存在本机，我们不上传、不出售。</li>
+      <li>在线音乐与歌词来自第三方接口与媒体 CDN，其可用性不由我们控制。</li>
+      <li>自建代理接口仅记录必要的技术日志，用于排查故障与保障安全。</li>
+    </ul>
+    <p class="consent-doc-links">
+      <a href="agreement.html" target="_blank" rel="noopener noreferrer">阅读《用户协议》</a>
+      <a href="privacy.html" target="_blank" rel="noopener noreferrer">阅读《隐私政策》</a>
+    </p>
+    <label class="consent-agree-row">
+      <input type="checkbox" id="consentCheckbox"/>
+      <span>我已详细阅读了用户隐私协议和用户协议，并同意以上协议</span>
+    </label>
+    <button class="consent-submit" id="consentAgreeBtn" type="button" disabled>同意并进入</button>
+  </div>
+</div>
+<!-- 协议同意门逻辑（defer，先于 main.js：弹窗先就位，播放器初始化在其下进行） -->
+<script defer src="js/consent.js?v=1"></script>
 <script defer src="js/main.js"></script>
 </body>
 </html>
