@@ -454,9 +454,19 @@ try { localStorage.setItem(k, v); } catch (e) { }
 }
 if (next.issuedAt) { try { localStorage.setItem(KUGOU_TOKEN_CACHE_KEY, String(next.issuedAt)); } catch (e) { } }
 if (next.lastValidAt) { try { localStorage.setItem('kugouTokenLastValidAt', String(next.lastValidAt)); } catch (e) { } }
-try { sessionStorage.setItem('kugouToken', next.token || ''); } catch (e) { }
-try { sessionStorage.setItem('kugouUserId', next.userId || ''); } catch (e) { }
-try { sessionStorage.setItem('kugouDfid', next.dfid || ''); } catch (e) { }
+/* sessionStorage 镜像同样「空值不覆盖已有值」：写入点极多（续期/VIP/昵称更新都是
+   store.write({token,…}) 且不带 dfid），用 '' 覆盖会把本会话已注册的 dfid 抹掉，
+   下次刷新就又要 /register/dev —— 这正是「刷新后又请求一次 dev」的一个放大器。 */
+for (const [mirrorKey, mirrorVal] of Object.entries({
+'kugouToken': next.token || '',
+'kugouUserId': next.userId || '',
+'kugouDfid': next.dfid || '',
+})) {
+try {
+if (!mirrorVal && sessionStorage.getItem(mirrorKey)) continue;
+sessionStorage.setItem(mirrorKey, mirrorVal);
+} catch (e) { }
+}
 } catch (e) {
 console.warn('[kugou-auth] credential write failed', e && e.message);
 }
@@ -2329,7 +2339,7 @@ let playerControlsLayout = 'classic';
 /* token 双存储：sessionStorage 优先，localStorage 兜底——避免刷新/WebView 场景下 sessionStorage 丢失导致强制重新登录 */
 let kugouToken = sessionStorage.getItem('kugouToken') || localStorage.getItem('kugouToken') || '';
 let kugouUserId = sessionStorage.getItem('kugouUserId') || localStorage.getItem('kugouUserId') || '';
-let kugouDfid = sessionStorage.getItem('kugouDfid') || '';
+let kugouDfid = sessionStorage.getItem('kugouDfid') || localStorage.getItem('kugouDfid') || '';
 /* ── 酷狗登录态分级（双源同步：HarmoniaApp/网页源码/js/main.js）──
    滑动续期时间戳：鉴权请求成功即刷新（10 分钟节流），代替旧的「30 天硬 TTL 直接判死并清凭证」。
    kugouAuthBootRetryTimer：启动静默校验失败后的 30s 重试句柄。 */
@@ -2890,6 +2900,9 @@ localStorage.setItem(LYRICS_ANIMATION_MODE_KEY, lyricsAnimationMode);
 applyLyricEnginePreset(lyricsAnimationMode);
 /* AMLL 是默认渲染器：档位必须同时下发到它，否则"性能"档对正在跑的引擎是空转 */
 applyAMLLQualityOptions();
+/* 用户主动切档位 = 明确改变了画质意图 → 重置自适应降级状态，允许重新评估。
+   否则一次误判造成的降级会让「切回视觉」也回不去。 */
+resetAMLLAdaptiveQuality();
 applyLyricsItemTransitions();
 requestAnimationFrame(() => {
 if (amLyricsData.length) {
@@ -5313,44 +5326,149 @@ amllFrameRAF = requestAnimationFrame(tick);
 amllFrameRAF = requestAnimationFrame(tick);
 }
 /* ── 移动端自适应画质降级（与客户端树同名同逻辑）─────────────────────────────
-   触发条件（全部满足才降级，且一生只降一次）：
+   触发条件（全部满足才降级）：
      1) 移动端（isMobile()）：桌面/Windows 端画质优先，不做任何自动降级；
      2) 用户没有显式选择过档位（localStorage 无 lyricsAnimationMode 记录）；
      3) 当前档位是 visual（performance/preview 已各自定义过画质）；
-     4) 观察到足够多的「慢帧」：以 2 秒滚动窗口统计，慢帧占比 ≥ 55% 且样本 ≥ 60 帧。
+     4) 观察到足够多的「慢帧」：以 2 秒滚动窗口统计，慢帧占比 ≥ 45% 且样本 ≥ 60 帧。
    降级动作：setEnableBlur(false) 一次；不动其它任何选项（不动弹簧/缩放/逐字），
    所以歌词的位移、缩放、逐字高亮节奏完全不变，只少了邻行的景深虚化。
-   为什么用「慢帧占比」而不是绝对帧率：高刷新率屏（90/120Hz）本身就把 16.7ms 当常态，
-   用绝对阈值会把好设备误判为弱机。 */
+
+   ★ 慢帧判定必须用「相对设备基线的倍率」，不能用绝对阈值。
+     原因：帧间隔的下限由**屏幕刷新率**决定，不是由设备性能决定——
+       60Hz 屏的正常帧间隔是 16.7ms、30Hz 屏就是 33.3ms。
+     早期版本用绝对阈值 `dt > 20ms`，结果一台稳定跑 30fps 的 30Hz 设备
+     慢帧占比恒为 100% → 被误判成弱机 → 永久关掉景深虚化（实测复现）。
+     改为：先测出**本机自己的帧周期基线**，再把「慢帧」定义为超过基线一定倍数的帧。
+     这样 30Hz 设备基线 33.3ms → 阈值 50ms，只有真掉到 30fps 以下才算慢帧；
+     60Hz 设备基线 16.7ms → 阈值 25ms，掉帧仍能识别。
+
+   ★ 基线取「设备历史最快的一帧」，不是当前窗口的中位数。
+     原因：若基线取当前窗口中位数，一台一直卡在 50ms 的设备会把基线测成 50ms，
+     阈值随之变成 75ms，于是永远判不出慢帧（降级永不触发）。
+     取最快帧等于记录「这台设备**能**跑多快」——只要它偶尔跑出过 60fps，
+     就说明 30fps 的那些帧是掉帧而不是屏幕上限。
+     另加一道绝对下限（absoluteFloorMs）：再快的帧也不低于 25ms 才算慢帧，
+     避免个别异常快帧把基线拉到噪声值。
+
+   ★ 降级是可逆的，不是单向锁。
+     早期版本 `downgraded` 一旦置 true 就再无复位路径，导致一次误判后
+     用户切档位也回不去。现在：
+       - 提供 resetAMLLAdaptiveQuality()，切档位时调用（用户主动改变画质意图时应重新评估）；
+       - 降级后若连续多个窗口不再出现慢帧，自动恢复景深虚化并复位统计。
+
+   ★ 样本数阈值必须与帧率解耦。
+     窗口固定 2 秒，但一个窗口里的帧数 = 2000 / 帧间隔：
+       60fps → 120 帧；30fps → 60 帧；20fps → 40 帧。
+     早期版本要求「样本 ≥ 60」，于是**越卡的设备样本越少、越达不到阈值**——
+     一个真正卡在 20fps 的设备永远不满足 minSamples，降级永不触发（与「弱机要降级」
+     的目标正好相反）。所以 minSamples 放宽到 20：任何 ≥10fps 的设备每个窗口都够样本，
+     同时 20 帧仍足以让「慢帧占比」的统计有意义。 */
 const AMLL_ADAPTIVE_QUALITY = {
 enabled: true,
 windowMs: 2000,
-minSamples: 60,
-slowFrameMs: 20,      // >20ms 视为慢帧：60Hz 下 16.7ms 正常、33.3ms 是掉帧；该阈值把「持续掉到 ~50fps 以下」判为弱机
+minSamples: 20,         // 窗口内至少要有这么多帧才作判定（必须与帧率解耦，见上方说明）
+absoluteFloorMs: 25,     // 慢帧的绝对下限：再慢也要 >25ms 才算（120Hz/90Hz 屏的正常间隔远小于此）
+slowFactor: 1.5,         // 慢帧阈值 = max(absoluteFloorMs, 基线 × 1.5)
 slowRatio: 0.45,
+recoveryWindows: 2,      // 连续多少个窗口无慢帧才恢复景深
+recoveryGuardWindows: 4, // 恢复后多少个窗口内不再次降级（防抖）
 };
-const amllFrameStats = { lastTs: -1, windowStart: 0, slow: 0, total: 0, downgraded: false, downgradeReason: '' };
+const amllFrameStats = {
+lastTs: -1,
+windowStart: 0,
+total: 0,
+downgraded: false,
+downgradeReason: '',
+baselineMs: 0,          // 本机最快帧间隔（0 = 尚未测出）
+baselineReady: false,
+recoverStreak: 0,       // 连续「无慢帧」窗口数
+postRecoveryGuard: 0,   // 恢复后的防抖计数
+__samples: [],
+};
+/* 重置自适应降级状态：用户主动切档位时调用。
+   复位后需要重新测基线（baselineMs/baselineReady 一并清掉）。 */
+function resetAMLLAdaptiveQuality() {
+amllFrameStats.downgraded = false;
+amllFrameStats.downgradeReason = '';
+amllFrameStats.baselineMs = 0;
+amllFrameStats.baselineReady = false;
+amllFrameStats.recoverStreak = 0;
+amllFrameStats.postRecoveryGuard = 0;
+amllFrameStats.total = 0;
+amllFrameStats.__samples = [];
+}
+/* 用本窗口的帧间隔样本更新基线：基线 = 设备**历史最快**的一帧。
+   只会变快不会变慢（避免偶发卡顿抬高阈值导致失灵）。 */
+function updateAMLLFrameBaseline(samples) {
+if (!samples.length) return false;
+let fastest = Infinity;
+for (const d of samples) { if (d > 0 && d < fastest) fastest = d; }
+if (!Number.isFinite(fastest)) return false;
+if (!amllFrameStats.baselineReady || fastest < amllFrameStats.baselineMs) {
+amllFrameStats.baselineMs = fastest;
+amllFrameStats.baselineReady = true;
+return true;
+}
+return false;
+}
 function observeAMLLFrameHealth(frameTime) {
-if (!AMLL_ADAPTIVE_QUALITY.enabled || amllFrameStats.downgraded) return;
+if (!AMLL_ADAPTIVE_QUALITY.enabled) return;
 if (lyricsAnimationMode !== 'visual') return;
 if (localStorage.getItem(LYRICS_ANIMATION_MODE_KEY) !== null) return;
 if (!isMobile()) return;
 const dt = amllFrameStats.lastTs === -1 ? 0 : frameTime - amllFrameStats.lastTs;
 amllFrameStats.lastTs = frameTime;
 if (!amllFrameStats.windowStart) amllFrameStats.windowStart = frameTime;
-if (dt > 0) {
+if (dt <= 0) return;
 amllFrameStats.total++;
-if (dt > AMLL_ADAPTIVE_QUALITY.slowFrameMs) amllFrameStats.slow++;
-}
+amllFrameStats.__samples.push(dt);
 if (frameTime - amllFrameStats.windowStart < AMLL_ADAPTIVE_QUALITY.windowMs) return;
 const total = amllFrameStats.total;
-const ratio = total ? amllFrameStats.slow / total : 0;
+const samples = amllFrameStats.__samples || [];
 amllFrameStats.windowStart = frameTime;
-amllFrameStats.slow = 0;
 amllFrameStats.total = 0;
+amllFrameStats.__samples = [];
+if (!total) return;
+updateAMLLFrameBaseline(samples);
+/* 基线未测出前不判定慢帧：宁可晚一点降级，也不能把 30Hz 设备误判成弱机。 */
+if (!amllFrameStats.baselineReady) return;
+const slowThreshold = Math.max(
+AMLL_ADAPTIVE_QUALITY.absoluteFloorMs,
+amllFrameStats.baselineMs * AMLL_ADAPTIVE_QUALITY.slowFactor
+);
+const slow = samples.filter((d) => d > slowThreshold).length;
+const ratio = total ? slow / total : 0;
+/* 已降级：观察是否恢复（连续若干窗口都不慢 → 恢复景深虚化）。 */
+if (amllFrameStats.downgraded) {
+if (slow === 0) {
+amllFrameStats.recoverStreak++;
+if (amllFrameStats.recoverStreak >= AMLL_ADAPTIVE_QUALITY.recoveryWindows) {
+const reason = amllFrameStats.downgradeReason;
+amllFrameStats.downgraded = false;
+amllFrameStats.downgradeReason = '';
+amllFrameStats.recoverStreak = 0;
+amllFrameStats.postRecoveryGuard = AMLL_ADAPTIVE_QUALITY.recoveryGuardWindows;
+try {
+amllPlayer?.setEnableBlur?.(true);
+console.info('[AMLL] 帧率已恢复到基线附近，重新开启逐行景深模糊：', reason);
+} catch (error) {
+console.warn('[AMLL] 恢复景深模糊失败:', error);
+}
+}
+} else {
+amllFrameStats.recoverStreak = 0;
+}
+return;
+}
+if (amllFrameStats.postRecoveryGuard > 0) {
+amllFrameStats.postRecoveryGuard--;
+return;
+}
 if (total >= AMLL_ADAPTIVE_QUALITY.minSamples && ratio >= AMLL_ADAPTIVE_QUALITY.slowRatio) {
 amllFrameStats.downgraded = true;
-amllFrameStats.downgradeReason = `slowRatio=${ratio.toFixed(2)} samples=${total}`;
+amllFrameStats.recoverStreak = 0;
+amllFrameStats.downgradeReason = `slowRatio=${ratio.toFixed(2)} samples=${total} baseline=${amllFrameStats.baselineMs.toFixed(1)}ms threshold=${slowThreshold.toFixed(1)}ms`;
 try {
 amllPlayer?.setEnableBlur?.(false);
 console.info('[AMLL] 检测到持续慢帧，已自动关闭逐行景深模糊（仅本机本次会话）：', amllFrameStats.downgradeReason);
@@ -11836,18 +11954,29 @@ if (pic) localStorage.setItem('kugouPic', pic);
 	kugouUserId = userid;
 	return data;
 }
+let kugouDfidRegistrationInFlight = null;
 async function ensureKugouDfid(forceRefresh = false) {
 if (!forceRefresh && kugouDfid) {
 return kugouDfid;
 }
+/* 并发注册单飞：播放、预加载可能同时进入这里；设备标识应整页共享同一次注册。
+   强制刷新也复用同一 Promise，避免失效重试期间反复打 /register/dev。 */
+if (kugouDfidRegistrationInFlight) return kugouDfidRegistrationInFlight;
+kugouDfidRegistrationInFlight = (async () => {
+try {
 const res = await wrappedFetchWithRetry(`${KUGOU_API_BASE}/register/dev`, { credentials: 'include' });
 if (!res.ok) throw new Error('获取酷狗 dfid 失败');
 const data = await res.json();
 const dfid = data?.data?.dfid;
 if (!dfid) throw new Error('未获取到有效的 dfid');
 kugouDfid = String(dfid);
-sessionStorage.setItem('kugouDfid', kugouDfid);
+kugouCredentialStore.write({ dfid: kugouDfid });
 return kugouDfid;
+} finally {
+kugouDfidRegistrationInFlight = null;
+}
+})();
+return kugouDfidRegistrationInFlight;
 }
 async function fetchKugouUserPlaylists(page = 1, pageSize = 30) {
 if (!kugouToken) throw new Error('请先在设置-账户中登录酷狗账号');
@@ -11993,7 +12122,7 @@ return `${finalUrl}${finalUrl.includes('?') ? '&' : '?'}_=${Date.now()}`;
 }
 
 // 无有效 URL，检查是否因 dfid 失效导致
-if (isKugouNeedRefreshDfid(payload) && retryCount < MAX_DDFID_RETRIES) {
+if (isKugouNeedRefreshDfid(payload) && retryCount < MAX_DFID_RETRIES) {
 console.warn(`[酷狗] dfid 可能已失效，正在刷新并重试 (第 ${retryCount + 1} 次)`);
 dfid = await ensureKugouDfid(true);
 retryCount++;
@@ -12018,7 +12147,7 @@ break;
 lastError = err;
 // 如果请求过程中抛出异常且可能是 dfid 问题，尝试刷新 dfid
 const msg = String(err.message || '');
-if ((msg.includes('dfid') || msg.includes('验证') || msg.includes('verify') || msg.includes('获取酷狗 dfid 失败')) && retryCount < MAX_DDFID_RETRIES) {
+if ((msg.includes('dfid') || msg.includes('验证') || msg.includes('verify') || msg.includes('获取酷狗 dfid 失败')) && retryCount < MAX_DFID_RETRIES) {
 console.warn(`[酷狗] dfid 请求异常，正在刷新并重试 (第 ${retryCount + 1} 次): ${msg}`);
 try {
 dfid = await ensureKugouDfid(true);
